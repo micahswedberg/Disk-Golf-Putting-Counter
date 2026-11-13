@@ -3,33 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Camera Test</title>
+<meta name="theme-color" content="#ffffff">
+<title>Putting Tracker</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<main>
-  <section id="feed">
-    <video id="video" autoplay muted playsinline></video>
-    <div id="placeholder">Rotate to landscape, then tap Start</div>
-  </section>
-  <section id="info">
-    <button id="toggle" type="button">Start</button>
-    <dl>
-      <dt>Requested</dt><dd id="requested">-</dd>
-      <dt>Delivered</dt><dd id="resolution">-</dd>
-      <dt>Reported fps</dt><dd id="settingsFps">-</dd>
-      <dt>Measured fps</dt><dd id="measuredFps">-</dd>
-      <dt>Camera</dt><dd id="cameraName">-</dd>
-      <dt>Wake lock</dt><dd id="wakeLock">-</dd>
-      <dt>Microphone</dt><dd id="mic">-</dd>
-    </dl>
-    <div id="meterWrap">
-      <div id="meter"><div id="meterFill"></div></div>
-      <div id="meterText">-</div>
-    </div>
-    <pre id="log"></pre>
-  </section>
-</main>
-<script type="module" src="camera.js"></script>
+<div id="app">
+  <section id="setup"></section>
+  <section id="screen" hidden></section>
+</div>
+<aside id="debug" hidden></aside>
+<script type="module" src="main.js"></script>
 </body>
 </html>
