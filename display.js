@@ -44,6 +44,22 @@ function formatDetail(f) {
   return `${ft} ft \u00b7 ${mph} mph \u00b7 ${deg}\u00b0`;
 }
 
+// ---- Camera feed read-out ---------------------------------------------------
+
+const VIEW_TEXT = {
+  none: 'NO PLAYER',
+  head: 'HEAD CUT OFF',
+  feet: 'FEET CUT OFF',
+  side: 'SIDE CUT OFF',
+  weak: 'PLAYER UNCLEAR',
+};
+
+// Skeleton segments drawn in ?debug=1 (MediaPipe landmark indices).
+const BONES = [
+  [11, 12], [11, 23], [12, 24], [23, 24], [11, 13], [13, 15], [12, 14], [14, 16],
+  [23, 25], [25, 27], [24, 26], [26, 28], [27, 29], [29, 31], [28, 30], [30, 32], [0, 11], [0, 12],
+];
+
 // ---- Screen -----------------------------------------------------------------
 
 const TEMPLATE = `
@@ -78,7 +94,11 @@ const TEMPLATE = `
     <div class="post-sub"></div>
   </div>
 
-  <video class="corner" muted playsinline autoplay></video>
+  <div class="feed">
+    <video class="corner" muted playsinline autoplay></video>
+    <canvas class="feed-ov"></canvas>
+    <div class="feed-readout"></div>
+  </div>
   <button class="stop" type="button">Stop</button>
 `;
 
@@ -102,6 +122,13 @@ export function createDisplay(root, { onStop }) {
     postPct: q('.post-pct'),
     postSub: q('.post-sub'),
   };
+  const feed = q('.feed');
+  const ov = q('.feed-ov');
+  const ovCtx = ov.getContext('2d');
+  const readout = q('.feed-readout');
+  let feedAspect = 16 / 9;
+  let readoutKey = '';
+  let tapFn = null;
 
   // Bucket strip rows, built once.
   const rows = [];
@@ -137,7 +164,7 @@ export function createDisplay(root, { onStop }) {
     const r = state.lastRound;
     if (!r) return;
     const pct = makePct(r.made, r.thrown);
-    el.postTitle.textContent = `ROUND ${r.roundNumber} DONE`;
+    el.postTitle.textContent = r.empty ? 'NO THROWS' : `ROUND ${r.roundNumber} DONE`;
     el.postBig.textContent = `${r.made}/${r.thrown}`;
     el.postPct.textContent = `${pct === null ? '--' : pct}% \u00b7 ${r.distanceFt === null ? '--' : r.distanceFt} ft`;
     el.postSub.textContent = `${r.thrown + r.ignored} thrown, ${r.thrown} counted, ${r.ignored} ignored`;
@@ -168,5 +195,95 @@ export function createDisplay(root, { onStop }) {
     }
   }
 
-  return { render, video: q('.corner') };
+  // ---- Camera feed: basket marker, what is missing, debug landmarks ----------
+
+  feed.addEventListener('click', (e) => {
+    if (!tapFn) return;
+    const r = feed.getBoundingClientRect();
+    // The feed is shown mirrored; tap x is converted back to raw camera-frame x.
+    tapFn(Math.min(1, Math.max(0, 1 - (e.clientX - r.left) / r.width)));
+  });
+
+  function drawFeed({ landmarks, basketX, anchorX, feetX, debug }) {
+    const W = ov.width;
+    const H = ov.height;
+    ovCtx.clearRect(0, 0, W, H);
+    const vline = (xn, color, width, dash) => {
+      ovCtx.setLineDash(dash);
+      ovCtx.strokeStyle = color;
+      ovCtx.lineWidth = width;
+      ovCtx.beginPath();
+      ovCtx.moveTo(xn * W, 0);
+      ovCtx.lineTo(xn * W, H);
+      ovCtx.stroke();
+    };
+    if (basketX != null) {
+      vline(basketX, '#000', 6, []);
+      vline(basketX, '#ffb000', 3, [10, 6]);
+    }
+    if (!debug) return;
+    if (anchorX != null) vline(anchorX, '#00d84a', 2, [4, 4]);
+    if (feetX != null) vline(feetX, '#00e5ff', 2, []);
+    ovCtx.setLineDash([]);
+    if (!landmarks) return;
+    ovCtx.lineWidth = 2;
+    ovCtx.strokeStyle = '#ff00ff';
+    for (const [a, b] of BONES) {
+      const p = landmarks[a];
+      const r = landmarks[b];
+      if (p.visibility < 0.3 || r.visibility < 0.3) continue;
+      ovCtx.beginPath();
+      ovCtx.moveTo(p.x * W, p.y * H);
+      ovCtx.lineTo(r.x * W, r.y * H);
+      ovCtx.stroke();
+    }
+    for (const i of [0, 11, 12, 23, 24, 27, 28, 29, 30, 31, 32]) {
+      const p = landmarks[i];
+      ovCtx.fillStyle = p.visibility >= 0.5 ? '#ffe100' : '#ff3030';
+      ovCtx.fillRect(p.x * W - 2, p.y * H - 2, 4, 4);
+    }
+  }
+
+  /**
+   * Refresh the corner feed. Called on every pose frame (and on pose status changes).
+   * info = { aspect, landmarks, basketX, anchorX, feetX, view, poseStatus, debug }
+   * The read-out lists what is missing from the picture: model status, basket, player.
+   */
+  function updateFeed(info) {
+    if (info.aspect && Math.abs(info.aspect - feedAspect) > 0.01) {
+      feedAspect = info.aspect;
+      feed.style.aspectRatio = String(feedAspect);
+    }
+    const ovH = Math.round(320 / feedAspect);
+    if (ov.width !== 320 || ov.height !== ovH) { ov.width = 320; ov.height = ovH; }
+    drawFeed(info);
+
+    const items = [];
+    if (info.poseStatus === 'loading') items.push('MODEL LOADING');
+    else if (info.poseStatus === 'failed') items.push('MODEL FAILED');
+    if (info.basketX == null) items.push('NO BASKET');
+    if (info.poseStatus === 'ready' && VIEW_TEXT[info.view]) items.push(VIEW_TEXT[info.view]);
+    const key = items.join('|');
+    if (key !== readoutKey) {
+      readoutKey = key;
+      readout.replaceChildren(...items.map((t) => {
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        chip.textContent = t;
+        return chip;
+      }));
+      feed.classList.toggle('alert', items.length > 0);
+    }
+  }
+
+  /** Debug: enlarge the feed (optionally tappable). */
+  function setFeedLarge(on, tappable = false) {
+    feed.classList.toggle('feed-large', on);
+    feed.classList.toggle('tap', on && tappable);
+  }
+
+  /** Debug: tap handler receiving raw-frame x (0..1); pass null to clear. */
+  function onFeedTap(fn) { tapFn = fn; }
+
+  return { render, video: q('.corner'), updateFeed, setFeedLarge, onFeedTap };
 }

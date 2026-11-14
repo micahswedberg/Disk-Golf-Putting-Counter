@@ -9,7 +9,8 @@
 //   { type: 'flags', patch }   patch of { camera, audio, basket, player, stable }
 //   { type: 'throw', result: 'make'|'miss'|'ignored', distanceFt, speedMph, releaseAngleDeg, missDirection, now }
 //   { type: 'flashDone', flashId }
-//   { type: 'roundEnd' }
+//   { type: 'roundEnd' }      accepted from LIVE/FLASH even with no throws yet (Phase 3: the
+//                             round end now comes from real foot movement, not from throws)
 
 import { CONFIG } from './config.js';
 
@@ -168,12 +169,10 @@ function settle(s) {
       if (!present) dropToNotReady(s);
       break;
     case SCREEN.POST_ROUND:
-      // Stay blue while the player walks around the basket.
+      // Stay blue the whole time the player is picking up discs, in frame or not.
+      // `ready` here means the tracker saw them back at the throwing area, upright and still.
       if (!f.camera || !f.audio) enterNotReady(s);
-      else if (f.player) {
-        if (ready) enterLive(s);
-        else enterNotReady(s);
-      }
+      else if (ready) enterLive(s);
       break;
     default:
       break;
@@ -257,9 +256,17 @@ export function reduce(state, ev) {
 
     case 'roundEnd': {
       if (state.screen !== SCREEN.LIVE && !isFlash(state.screen)) return state;
-      if (state.round.counted + state.round.ignored === 0) return state;
       const s = structuredClone(state);
-      closeRound(s);
+      if (s.round.counted + s.round.ignored === 0) {
+        // Nothing thrown: still go blue, but log no round and hand the number back.
+        s.roundOpen = false;
+        s.lastRound = {
+          roundNumber: s.roundNumber, distanceFt: null, thrown: 0, made: 0, ignored: 0, empty: true,
+        };
+        s.roundNumber -= 1;
+      } else {
+        closeRound(s);
+      }
       s.flash = null;
       s.screen = SCREEN.POST_ROUND;
       return s;
