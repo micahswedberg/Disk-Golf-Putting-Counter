@@ -7,6 +7,7 @@ import { renderSetup } from './setup.js';
 import * as cam from './camera.js';
 import { createPose } from './pose.js';
 import { createRoundTracker } from './round.js';
+import { createThrowDetector } from './throws.js';
 
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 
@@ -27,6 +28,43 @@ let lastFlags = {};
 let lastDebugAt = 0;
 let bigFeed = false;
 let tapArmed = false;
+let lastMotionAt = 0;
+
+// Phase 4: throw detection. The outcome (make/miss) is not known until the disc/basket pipeline
+// exists, so every detected release is scored with a TEMPORARY outcome picked here. In ?debug=1
+// the "Outcome" button cycles MISS / MAKE / ALT; otherwise every detected throw is a MISS.
+const OUTCOMES = ['miss', 'make', 'alternate'];
+let outcomeIdx = 0;
+let altFlip = false;
+
+function pickOutcome() {
+  const mode = OUTCOMES[outcomeIdx];
+  if (mode !== 'alternate') return mode;
+  altFlip = !altFlip;
+  return altFlip ? 'make' : 'miss';
+}
+
+const throwTools = {
+  cycleOutcome() {
+    outcomeIdx = (outcomeIdx + 1) % OUTCOMES.length;
+    if (debugPanel) debugPanel.update();
+  },
+  getOutcome: () => OUTCOMES[outcomeIdx].toUpperCase(),
+};
+
+const detector = createThrowDetector({
+  onThrow(t) {
+    dispatch({
+      type: 'throw',
+      result: pickOutcome(),
+      distanceFt: t.distanceFt,
+      speedMph: null, // Phase 5+: from flight.js
+      releaseAngleDeg: null,
+      missDirection: null,
+      now: Date.now(),
+    });
+  },
+});
 
 /** Send an event through the state machine, then render and schedule flash expiry. */
 function dispatch(ev) {
@@ -94,7 +132,25 @@ function onPoseFrame(frame) {
   const out = tracker.update(frame, now, state);
   syncFlags({ player: out.flags.player, stable: out.flags.stable });
   if (out.roundEnd) dispatch({ type: 'roundEnd' });
+
+  // Throw detection runs only while a round is open and LIVE / FLASH, so a swing made while
+  // NOT_READY or on the blue screen is never counted.
+  const snap = tracker.snapshot();
+  detector.update(frame, now, {
+    active: state.roundOpen && (state.screen === SCREEN.LIVE || isFlash(state.screen)),
+    roundNumber: state.roundNumber,
+    basketX: tracker.getBasketX(),
+    anchor: tracker.getAnchor(),
+    feetXn: snap.feetXn,
+    heightPx: snap.heightPx,
+    distLiveFt: snap.distLiveFt,
+  });
+
   pushFeed();
+  if (debugPanel && now - lastMotionAt > 100) {
+    lastMotionAt = now;
+    debugPanel.drawMotion();
+  }
   if (debugPanel && now - lastDebugAt > 200) {
     lastDebugAt = now;
     debugPanel.update();
@@ -165,6 +221,7 @@ async function startSession({ heightIn } = {}) {
   enterFullscreen();
   setup.setBusy(true);
   tracker.reset();
+  detector.reset();
   tracker.setHeightIn(heightIn || CONFIG.HEIGHT_DEFAULT_IN);
   lastFrame = null;
   lastFlags = {};
@@ -197,6 +254,7 @@ async function startSession({ heightIn } = {}) {
 async function stopSession() {
   pose.stop();
   tracker.reset();
+  detector.reset();
   resetFeedMode();
   dispatch({ type: 'stop' });
   exitFullscreen();
@@ -220,6 +278,9 @@ if (DEBUG) {
     getCameraInfo: cam.getCameraInfo,
     getTrack: () => ({ ...tracker.snapshot(), pose: pose.getStats() }),
     basketTools,
+    throwTools,
+    getThrows: detector.getInfo,
+    getTrace: detector.getTrace,
   });
   setInterval(() => debugPanel.update(), 1000); // keeps the fps readout fresh
 }

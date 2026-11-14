@@ -98,6 +98,41 @@ export const CONFIG = {
     ROUND_END_MEDIAN_N: 5, // samples in the median that smooths foot x
   },
 
+  // throws.js: release detection from wrist motion (Phase 4). Distances are in BODY HEIGHTS
+  // (pixels divided by the player's pixel height), speeds in body heights per second, so
+  // they do not depend on how far the player stands from the phone. These are first guesses:
+  // tune them with the motion trace in ?debug=1.
+  THROW: {
+    VIS_MIN: 0.35, // wrist landmark visibility needed to use a sample
+    BODY_VIS_MIN: 0.3, // shoulder / hip / nose visibility needed for the body gates
+    VEL_WINDOW_MS: 120, // wrist speed is measured over about this long
+    VEL_MIN_SPAN_MS: 50, // ...but never over less than this
+    SPEED_START: 1.0, // forward wrist speed that opens a swing
+    SPEED_END: 0.5, // below this the swing is over (the follow-through has begun)
+    SPEED_MIN: 1.8, // peak forward speed a real putt must reach (a slow reach stays below)
+    SWING_MIN_MS: 70, // swings shorter than this are pose jitter
+    SWING_MAX_MS: 700, // swings longer than this are not a putt
+    GAP_MS: 250, // wrist unseen this long aborts an open swing
+    BACK_WINDOW_MS: 500, // look back this far for the backswing position
+    EXT_GAIN_MIN: 0.12, // wrist must move this far forward of the shoulder during the swing
+    EXT_MIN: 0.10, // ...and end at least this far forward of the shoulder
+    FWD_SHARE_MIN: 0.6, // forward part of the wrist path (1 = level, 0 = straight down or up)
+
+    // Gates read at the moment of peak speed. Any failure rejects the swing.
+    MAX_TILT_DEG: 35, // shoulder-mid to hip-mid tilt; bending to the bag is far past this
+    MIN_HEAD_RATIO: 0.12, // (nose above shoulders) / torso height; a dropped head means bending
+    MIN_WRIST_RISE: -0.15, // wrist height above the hips, in torso heights; the bag is below it
+    HIP_WINDOW_MS: 600,
+    HIP_MAX_MOVE: 0.12, // hips may move this many body heights in the window (stance shuffle)
+    ANCHOR_MAX_FT: 3, // feet must be this close to the throwing spot
+    MIN_GAP_MS: 1500, // no second throw this soon after one
+
+    BUF_MS: 1200, // wrist sample history kept
+    TRACE_MS: 8000, // debug motion trace length
+    TRACE_MAX_SPEED: 4, // top of the debug trace (body heights per second)
+    LOG_N: 5, // recent swing verdicts shown in the debug read-out
+  },
+
   // Debug-only simulated throw values (?debug=1)
   SIM: {
     startDistanceFt: 15,
