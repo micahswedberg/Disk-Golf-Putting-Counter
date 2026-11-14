@@ -65,12 +65,15 @@ button { font: inherit; cursor: pointer; }
 .warn { height: 46vh; width: auto; color: var(--fg); }
 .reason { font-size: min(15vh, 9vw); line-height: 1; white-space: nowrap; margin-top: 3vh; }
 
+/* LIVE and POST_ROUND share one big-number size so they read the same from 40 ft */
+#screen { --big: min(34vh, 16vw); }
+
 /* LIVE */
 .v-live { grid-template-columns: 1fr 27vw; padding: 0; align-items: stretch; justify-content: stretch; }
 .live-main { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 0; }
-.round-label { font-size: min(7vh, 4vw); line-height: 1; }
-.big { font-size: min(46vh, 21vw); line-height: 0.95; }
-.big-label { font-size: min(8vh, 4.5vw); line-height: 1; }
+.round-label { font-size: min(6vh, 3.6vw); line-height: 1; }
+.big { font-size: var(--big); line-height: 0.95; white-space: nowrap; }
+.big .u { font-size: 0.4em; margin-left: 0.15em; }
 .strip { display: flex; flex-direction: column; border-left: 1vh solid var(--fg); }
 .strip .row {
   flex: 1; display: flex; align-items: center; justify-content: space-between;
@@ -117,11 +120,17 @@ button { font: inherit; cursor: pointer; }
 .flash-detail { font-size: min(12vh, 7.6vw); line-height: 1; margin-top: 3vh; white-space: nowrap; }
 .flash-dir { font-size: min(10vh, 6vw); line-height: 1; margin-top: 2vh; }
 
-/* POST_ROUND */
-.post-title { font-size: min(8vh, 5vw); line-height: 1; }
-.post-big { font-size: min(38vh, 19vw); line-height: 1; }
-.post-pct { font-size: min(14vh, 8vw); line-height: 1; white-space: nowrap; }
-.post-sub { font-size: min(8vh, 4.5vw); line-height: 1.1; margin-top: 2vh; }
+/* POST_ROUND: made/thrown flush left, one key value to its right (distance; detail when the player is near) */
+.v-post { align-items: flex-start; justify-content: center; text-align: left; padding: 2vh 2vw; }
+.post-title { font-size: min(7vh, 4.4vw); line-height: 1; }
+.post-row { display: flex; align-items: center; gap: 4vw; margin: 1vh 0; }
+.post-big { font-size: var(--big); line-height: 1; white-space: nowrap; }
+.post-dist { font-size: var(--big); line-height: 1; white-space: nowrap; }
+.post-dist .u { font-size: 0.4em; margin-left: 0.15em; }
+.post-detail { display: none; font-size: min(8vh, 4.6vw); line-height: 1.1; white-space: pre-line; }
+#screen[data-near="1"] .post-dist { display: none; }
+#screen[data-near="1"] .post-detail { display: block; }
+.post-sub { font-size: min(7vh, 4vw); line-height: 1.1; }
 
 /* ---- Debug panel (?debug=1 only) ------------------------------------------- */
 

@@ -73,6 +73,8 @@ function pushBasketFlag() {
 /** Refresh the corner feed (basket marker, read-out of what is missing, debug landmarks). */
 function pushFeed() {
   const snap = tracker.snapshot();
+  display.setLiveDistance(snap.anchorDistFt ?? snap.distLiveFt ?? null);
+  display.setNear(state.screen === SCREEN.POST_ROUND && snap.view === 'feet');
   display.updateFeed({
     aspect: lastFrame ? lastFrame.w / lastFrame.h : null,
     landmarks: lastFrame ? lastFrame.landmarks : null,

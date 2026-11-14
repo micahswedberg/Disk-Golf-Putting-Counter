@@ -75,8 +75,8 @@ const TEMPLATE = `
   <div class="view v-live">
     <div class="live-main">
       <div class="round-label"></div>
-      <div class="big"></div>
-      <div class="big-label">MADE / THROWN</div>
+      <div class="big live-made"></div>
+      <div class="big live-dist"><span class="n">--</span><span class="u">ft</span></div>
     </div>
     <div class="strip"></div>
   </div>
@@ -89,8 +89,13 @@ const TEMPLATE = `
 
   <div class="view v-post">
     <div class="post-title"></div>
-    <div class="post-big"></div>
-    <div class="post-pct"></div>
+    <div class="post-row">
+      <div class="post-big"></div>
+      <div class="post-right">
+        <div class="post-dist"><span class="n"></span><span class="u">ft</span></div>
+        <div class="post-detail"></div>
+      </div>
+    </div>
     <div class="post-sub"></div>
   </div>
 
@@ -112,14 +117,16 @@ export function createDisplay(root, { onStop }) {
   const el = {
     reason: q('.reason'),
     roundLabel: q('.round-label'),
-    big: q('.big'),
+    big: q('.live-made'),
+    liveDist: q('.live-dist .n'),
     strip: q('.strip'),
     flashTitle: q('.flash-title'),
     flashDetail: q('.flash-detail'),
     flashDir: q('.flash-dir'),
     postTitle: q('.post-title'),
     postBig: q('.post-big'),
-    postPct: q('.post-pct'),
+    postDist: q('.post-dist .n'),
+    postDetail: q('.post-detail'),
     postSub: q('.post-sub'),
   };
   const feed = q('.feed');
@@ -164,10 +171,23 @@ export function createDisplay(root, { onStop }) {
     const r = state.lastRound;
     if (!r) return;
     const pct = makePct(r.made, r.thrown);
+    const pctText = pct === null ? '--' : pct;
+    const dist = r.distanceFt === null ? '--' : r.distanceFt;
+    const rt = r.empty ? [] : state.throws.filter((t) => t.roundNumber === r.roundNumber);
+    const avg = (key) => {
+      const v = rt.map((t) => t[key]).filter((x) => x != null);
+      return v.length ? Math.round(v.reduce((x, y) => x + y, 0) / v.length) : '--';
+    };
     el.postTitle.textContent = r.empty ? 'NO THROWS' : `ROUND ${r.roundNumber} DONE`;
     el.postBig.textContent = `${r.made}/${r.thrown}`;
-    el.postPct.textContent = `${pct === null ? '--' : pct}% \u00b7 ${r.distanceFt === null ? '--' : r.distanceFt} ft`;
-    el.postSub.textContent = `${r.thrown + r.ignored} thrown, ${r.thrown} counted, ${r.ignored} ignored`;
+    el.postDist.textContent = dist; // far view: big distance
+    el.postDetail.textContent = [ // near view (feet cut off): smaller detail
+      `${pctText}% made`,
+      `${dist} ft`,
+      `avg ${avg('speedMph')} mph`,
+      `avg ${avg('releaseAngleDeg')}\u00b0`,
+    ].join('\n');
+    el.postSub.textContent = `${pctText}% \u00b7 ${r.thrown + r.ignored} thrown, ${r.thrown} counted, ${r.ignored} ignored`;
   }
 
   function render(state) {
@@ -285,5 +305,20 @@ export function createDisplay(root, { onStop }) {
   /** Debug: tap handler receiving raw-frame x (0..1); pass null to clear. */
   function onFeedTap(fn) { tapFn = fn; }
 
-  return { render, video: q('.corner'), updateFeed, setFeedLarge, onFeedTap };
+  /** Live distance (ft) of the current throwing spot, shown on the LIVE screen. null shows "--". */
+  let liveDistText = '--';
+  function setLiveDistance(ft) {
+    const t = ft == null ? '--' : String(Math.round(ft));
+    if (t === liveDistText) return;
+    liveDistText = t;
+    el.liveDist.textContent = t;
+  }
+
+  /** POST_ROUND: true when the player is close to the camera (feet cut off) -> detail view. */
+  function setNear(on) {
+    const v = on ? '1' : '0';
+    if (root.dataset.near !== v) root.dataset.near = v;
+  }
+
+  return { render, video: q('.corner'), updateFeed, setFeedLarge, onFeedTap, setLiveDistance, setNear };
 }
