@@ -119,11 +119,11 @@ export const CONFIG = {
     FWD_SHARE_MIN: 0.6, // forward part of the wrist path (1 = level, 0 = straight down or up)
 
     // Gates read at the moment of peak speed. Any failure rejects the swing.
-    MAX_TILT_DEG: 35, // shoulder-mid to hip-mid tilt; bending to the bag is far past this
+    MAX_TILT_DEG: 45, // shoulder-mid to hip-mid tilt; real putts read 25-37, bends to the bag 53-90
     MIN_HEAD_RATIO: 0.12, // (nose above shoulders) / torso height; a dropped head means bending
     MIN_WRIST_RISE: -0.15, // wrist height above the hips, in torso heights; the bag is below it
     HIP_WINDOW_MS: 600,
-    HIP_MAX_MOVE: 0.12, // hips may move this many body heights in the window (stance shuffle)
+    HIP_MAX_MOVE: 0.75, // hip travel (body heights) in the window; real putts read 0.1-0.5, bends 1.0-2.9
     ANCHOR_MAX_FT: 3, // feet must be this close to the throwing spot
     MIN_GAP_MS: 1500, // no second throw this soon after one
 

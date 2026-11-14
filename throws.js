@@ -81,7 +81,7 @@ export function createThrowDetector({ onThrow } = {}) {
 
   function logEvent(e) {
     events.push(e);
-    if (events.length > 40) events.shift();
+    if (events.length > 300) events.shift(); // the copy-log button needs the whole session
   }
 
   /** Every test a finished swing failed, as [{ code, text }]. Empty = it is a putt. */
