@@ -8,6 +8,7 @@ import { SCREEN } from './state.js';
 
 const FLAG_NAMES = ['camera', 'audio', 'basket', 'player', 'stable'];
 
+const num = (v, d = 1) => (v == null ? '--' : v.toFixed(d));
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -69,7 +70,7 @@ export function createDebugPanel(root, {
     <div class="dbg-body">
       <div class="dbg-actions"></div>
       <div class="dbg-flags"></div>
-      <canvas class="dbg-motion" width="320" height="90" style="width:100%;max-width:420px;display:block;margin-top:4px"></canvas>
+      <canvas class="dbg-motion" width="640" height="170" style="width:100%;max-width:640px;display:block;margin-top:4px"></canvas>
       <pre class="dbg-read"></pre>
     </div>`;
 
@@ -92,6 +93,27 @@ export function createDebugPanel(root, {
   outcomeBtn.type = 'button';
   outcomeBtn.addEventListener('click', () => throwTools.cycleOutcome());
   actionsEl.appendChild(outcomeBtn);
+
+  function logText() {
+    const { events } = getTrace();
+    const end = events.length ? events[events.length - 1].t : 0;
+    const p = getTrack().pose || {};
+    return [
+      `pose ${num(p.fps)} fps, ${num(p.inferMs, 0)} ms`,
+      ...events.map((e) => `${num((e.t - end) / 1000)}s ${e.ok ? 'THROW' : 'REJECT'} ${e.arm}`
+        + ` v${num(e.peakV)} gain${num(e.gain, 2)} ext${num(e.ext, 2)} dir${num(e.share, 2)} dur${num(e.dur, 0)}`
+        + ` | tilt${num(e.tilt, 0)} head${num(e.headRatio, 2)} rise${num(e.rise, 2)} hips${num(e.hipMove, 2)} off${num(e.offSpotFt)}ft`
+        + (e.ok ? '' : ` | ${e.detail}`)),
+    ].join('\n');
+  }
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.textContent = 'Copy swing log';
+  copyBtn.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(logText()); copyBtn.textContent = 'Copied!'; } catch (_) { copyBtn.textContent = 'Copy failed'; }
+    setTimeout(() => { copyBtn.textContent = 'Copy swing log'; }, 1500);
+  });
+  actionsEl.appendChild(copyBtn);
 
   const motionEl = root.querySelector('.dbg-motion');
   const mg = motionEl.getContext('2d');
@@ -131,18 +153,22 @@ export function createDebugPanel(root, {
       mg.stroke();
     }
 
-    mg.font = '10px monospace';
+    mg.font = '15px monospace';
+    let row = 0;
     for (const e of events) {
       if (tEnd - e.t > T.TRACE_MS) continue;
       const x = xOf(e.t);
       mg.strokeStyle = e.ok ? '#3d6' : '#888';
       mg.lineWidth = e.ok ? 2 : 1;
-      mg.beginPath(); mg.moveTo(x, 12); mg.lineTo(x, H); mg.stroke();
-      mg.fillStyle = e.ok ? '#3d6' : '#aaa';
-      mg.fillText(e.ok ? 'THROW' : e.reason, Math.min(x + 2, W - 44), 10);
+      mg.beginPath(); mg.moveTo(x, 14); mg.lineTo(x, H); mg.stroke();
+      mg.fillStyle = e.ok ? '#3d6' : '#ccc';
+      row = (row + 1) % 4; // stagger so neighbouring labels do not print on top of each other
+      const label = `${e.arm} ${e.ok ? 'THROW' : e.reason}`;
+      mg.fillText(label, Math.min(x + 3, W - mg.measureText(label).width - 2), 14 + row * 15);
     }
+    mg.font = '12px monospace';
     mg.fillStyle = '#888';
-    mg.fillText(`cyan L \u00b7 orange R \u00b7 red = min speed \u00b7 ${T.TRACE_MS / 1000}s`, 2, H - 2);
+    mg.fillText(`L cyan, R orange, red = min speed, last ${T.TRACE_MS / 1000}s (right edge = now)`, 4, H - 4);
   }
 
   const flagEls = {};
@@ -159,7 +185,10 @@ export function createDebugPanel(root, {
 
   function update() {
     const s = getState();
-    stateEl.textContent = s.screen + (s.reason ? ` \u00b7 ${s.reason}` : '');
+    const th = getThrows();
+    const last = th.recent[th.recent.length - 1];
+    stateEl.textContent = s.screen + (s.reason ? ` \u00b7 ${s.reason}` : '')
+      + ` \u00b7 THROWS ${th.detected}` + (last ? ` \u00b7 last ${last.ok ? 'THROW' : last.reason}` : '');
     for (const name of FLAG_NAMES) {
       flagEls[name].textContent = `${name === 'stable' ? 'still' : name}: ${s.flags[name] ? '\u2713' : '\u2717'}`;
     }
@@ -179,22 +208,21 @@ export function createDebugPanel(root, {
       `DIST live ${f(t.distLiveFt)} ft \u00b7 toward ${f(t.towardFt)} ft \u00b7 away ${f(t.awayFt)} ft`,
     ];
     outcomeBtn.textContent = `Outcome (temp): ${throwTools.getOutcome()}`;
-    const th = getThrows();
     const lv = th.live || {};
     const swingLines = th.recent.map((e) => (e.ok
       ? `  \u2713 ${e.arm} v ${f(e.peakV)} gain ${f(e.gain, 2)} ${e.dist ?? '--'} ft`
-      : `  \u2717 ${e.reason} \u00b7 ${e.arm} v ${f(e.peakV)} gain ${f(e.gain, 2)} dir ${f(e.share, 2)}`));
+      : `  \u2717 ${e.arm} v ${f(e.peakV)}: ${e.detail}`));
     const throwLines = [
       `THROWS detected ${th.detected} this round \u00b7 outcome ${throwTools.getOutcome()}`,
       `v L ${f(lv.vL)} R ${f(lv.vR)} \u00b7 ext L ${f(lv.eL, 2)} R ${f(lv.eR, 2)} \u00b7 tilt ${f(lv.tilt, 0)}\u00b0 head ${f(lv.headRatio, 2)} hips ${f(lv.hipMove, 2)} off-spot ${f(lv.offSpotFt)} ft`,
       ...swingLines,
     ];
     readEl.textContent = [
+      ...throwLines,
       `round ${s.roundNumber} \u00b7 made ${s.round.made}/${s.round.counted} \u00b7 ignored ${s.round.ignored} \u00b7 lost ${s.lost}`,
       `session throws ${s.throws.length} \u00b7 rounds closed ${s.rounds.length} \u00b7 sim dist ${simDistance} ft`,
       camLine,
       ...trackLines,
-      ...throwLines,
     ].join('\n');
     drawMotion();
   }

@@ -84,22 +84,25 @@ export function createThrowDetector({ onThrow } = {}) {
     if (events.length > 40) events.shift();
   }
 
-  /** Why a finished swing is not a putt, or null if it is one. */
+  /** Every test a finished swing failed, as [{ code, text }]. Empty = it is a putt. */
   function verdict(sw, m) {
-    if (m.dur < C.SWING_MIN_MS) return 'short';
-    if (sw.peakV < C.SPEED_MIN) return 'slow';
-    if (m.gain < C.EXT_GAIN_MIN) return 'gain';
-    if (sw.maxExt < C.EXT_MIN) return 'reach';
-    if (m.share < C.FWD_SHARE_MIN) return 'dir';
     const g = sw.gate;
-    if (g.tilt == null || g.tilt > C.MAX_TILT_DEG) return 'bend';
-    if (g.headRatio != null && g.headRatio < C.MIN_HEAD_RATIO) return 'bend';
-    if (g.rise == null || g.rise < C.MIN_WRIST_RISE) return 'low';
-    if (g.hipMove == null || g.hipMove > C.HIP_MAX_MOVE) return 'hips';
-    if (g.offSpotFt == null || g.offSpotFt > C.ANCHOR_MAX_FT) return 'off spot';
-    if (g.distFt == null) return 'no dist';
-    if (sw.peakT - lastThrowT < C.MIN_GAP_MS) return 'gap';
-    return null;
+    const out = [];
+    const add = (code, text) => out.push({ code, text });
+    const n = (v, d = 2) => (v == null ? '--' : v.toFixed(d));
+    if (m.dur < C.SWING_MIN_MS) add('short', `dur ${Math.round(m.dur)}<${C.SWING_MIN_MS}ms`);
+    if (sw.peakV < C.SPEED_MIN) add('slow', `speed ${n(sw.peakV, 1)}<${C.SPEED_MIN}`);
+    if (m.gain < C.EXT_GAIN_MIN) add('gain', `gain ${n(m.gain)}<${C.EXT_GAIN_MIN}`);
+    if (sw.maxExt < C.EXT_MIN) add('reach', `ext ${n(sw.maxExt)}<${C.EXT_MIN}`);
+    if (m.share < C.FWD_SHARE_MIN) add('dir', `dir ${n(m.share)}<${C.FWD_SHARE_MIN}`);
+    if (g.tilt == null || g.tilt > C.MAX_TILT_DEG) add('bend', `tilt ${n(g.tilt, 0)}>${C.MAX_TILT_DEG}`);
+    if (g.headRatio != null && g.headRatio < C.MIN_HEAD_RATIO) add('bend', `head ${n(g.headRatio)}<${C.MIN_HEAD_RATIO}`);
+    if (g.rise == null || g.rise < C.MIN_WRIST_RISE) add('low', `rise ${n(g.rise)}<${C.MIN_WRIST_RISE}`);
+    if (g.hipMove == null || g.hipMove > C.HIP_MAX_MOVE) add('hips', `hips ${n(g.hipMove)}>${C.HIP_MAX_MOVE}`);
+    if (g.offSpotFt == null || g.offSpotFt > C.ANCHOR_MAX_FT) add('off spot', `off ${n(g.offSpotFt, 1)}>${C.ANCHOR_MAX_FT}ft`);
+    if (g.distFt == null) add('no dist', 'no distance');
+    if (sw.peakT - lastThrowT < C.MIN_GAP_MS) add('gap', `gap ${Math.round(sw.peakT - lastThrowT)}<${C.MIN_GAP_MS}ms`);
+    return out;
   }
 
   function finish(name, arm) {
@@ -123,13 +126,17 @@ export function createThrowDetector({ onThrow } = {}) {
       share = len > 1e-6 ? dx / len : 0;
     }
     const m = { dur: sw.lastT - sw.t0, gain, share };
-    const reason = verdict(sw, m);
+    const fails = verdict(sw, m);
+    const reason = fails.length ? fails[0].code : null;
     const dist = sw.gate.distFt == null
       ? null
       : Math.round(Math.min(Math.max(sw.gate.distFt, CONFIG.DIST_MIN_FT), CONFIG.DIST_MAX_FT));
 
+    const g = sw.gate;
     logEvent({
-      t: sw.peakT, ok: !reason, reason, arm: name, peakV: sw.peakV, gain, share, dist,
+      t: sw.peakT, ok: !reason, reason, detail: fails.map((x) => x.text).join('; '),
+      arm: name, peakV: sw.peakV, gain, share, dist, ext: sw.maxExt, dur: m.dur,
+      tilt: g.tilt, headRatio: g.headRatio, rise: g.rise, hipMove: g.hipMove, offSpotFt: g.offSpotFt,
     });
     if (reason) return;
 
@@ -151,7 +158,7 @@ export function createThrowDetector({ onThrow } = {}) {
     arm.rearm = true;
     if (sw && sw.peakV >= C.SPEED_MIN) {
       logEvent({
-        t: sw.peakT, ok: false, reason: 'lost', arm: name, peakV: sw.peakV, gain: 0, share: 0, dist: null,
+        t: sw.peakT, ok: false, reason: 'lost', detail: 'wrist unseen', arm: name, peakV: sw.peakV, gain: 0, share: 0, dist: null,
       });
     }
   }
