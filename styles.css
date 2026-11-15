@@ -147,3 +147,7 @@ button { font: inherit; cursor: pointer; }
 .dbg-bar { display: flex; align-items: center; gap: 8px; padding: 2px 4px; }
 .dbg-body { padding: 0 4px 4px; }
 .dbg-read { margin: 4px 0 0; white-space: pre-wrap; color: #ccc; }
+
+/* On the setup screen the tray sits at the top, collapsed, so it never covers the Start button. */
+#debug.on-setup { top: 0; bottom: auto; max-height: none; overflow: visible; }
+#debug.on-setup .dbg-body { display: none; }

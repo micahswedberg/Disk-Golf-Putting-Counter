@@ -97,6 +97,7 @@ function dispatch(ev) {
 
   const inSetup = state.screen === SCREEN.SETUP;
   setupRoot.hidden = !inSetup;
+  debugRoot.classList.toggle('on-setup', inSetup);
   screenRoot.hidden = inSetup;
   if (!inSetup) display.render(state);
 
@@ -312,6 +313,7 @@ if (DEBUG) {
     getTrace: detector.getTrace,
   });
   setInterval(() => debugPanel.update(), 1000); // keeps the fps readout fresh
+  debugRoot.classList.toggle('on-setup', state.screen === SCREEN.SETUP); // the app launches on SETUP
   const { createOutcomeDebug } = await import('./outcome-debug.js');
   createOutcomeDebug(debugRoot, {
     video: display.video, finder, chains, getStreams: cam.getStreams,
