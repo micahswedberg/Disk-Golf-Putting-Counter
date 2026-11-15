@@ -101,7 +101,7 @@ function startFpsMeter(video) {
   video.requestVideoFrameCallback(tick);
 }
 
-// ---- Microphone (open-and-confirm only; the audio spike detector comes later) --
+// ---- Microphone (opened here; outcome.js listens to the stream) ----------------------
 
 export async function startMic({ onEnded } = {}) {
   micStream = await navigator.mediaDevices.getUserMedia({
@@ -110,6 +110,11 @@ export async function startMic({ onEnded } = {}) {
   const track = micStream.getAudioTracks()[0];
   track.addEventListener('ended', () => { if (onEnded) onEnded(); });
   return track.label || 'unknown';
+}
+
+/** The open camera and mic streams (either may be null). For outcome.js and the debug recorder. */
+export function getStreams() {
+  return { video: cameraStream, audio: micStream };
 }
 
 export function stopMic() {

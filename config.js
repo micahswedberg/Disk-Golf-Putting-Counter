@@ -40,9 +40,9 @@ export const CONFIG = {
   // ---- Phase 3: basket, pose and round tracking -----------------------------
 
   // Basket x as a fraction of the RAW camera frame width (0 = left edge of the unmirrored
-  // frame, 1 = right edge). null = not set, so the screen says FINDING BASKET.
-  // Until basket detection exists (Phase 4+): set a number here, or in ?debug=1 use
-  // "Set basket (tap)" in the debug panel and tap the enlarged camera feed.
+  // frame, 1 = right edge). null = find it automatically (outcome.js, BASKET below) and show
+  // FINDING BASKET until it is found. A number here skips the search and forces that x.
+  // In ?debug=1, "Set basket (tap)" in the debug panel still overrides either one.
   BASKET_X_NORM: null,
 
   // MediaPipe Pose Landmarker (pinned version, loaded from a CDN).
@@ -131,6 +131,64 @@ export const CONFIG = {
     TRACE_MS: 8000, // debug motion trace length
     TRACE_MAX_SPEED: 4, // top of the debug trace (body heights per second)
     LOG_N: 5, // recent swing verdicts shown in the debug read-out
+  },
+
+  // ---- Phase 5a: outcome.js - basket finder and chain-sound detector ---------------------
+  // All first guesses: tune them against real footage (?debug=1 can record clips).
+
+  // Basket finder: finds a square patch of dense vertical lines (the chain cage) near either end
+  // of the putt line. Coordinates are fractions of the raw frame.
+  BASKET: {
+    SCAN_MS: 250, // time between scans while searching (nothing runs once the basket is found)
+    SCAN_W: 960, // analysis width in px; the chains are too fine to see much below this
+    SEARCH_X: [[0.02, 0.40], [0.60, 0.98]], // the basket is at one end of the line, so near a side
+    SEARCH_Y: [0.30, 0.75], // box centre must lie in this band of the frame height
+    BOX_H_FRACS: [0.05, 0.065, 0.08, 0.10], // cage height as a fraction of frame height (scales tried)
+    BOX_ASPECT: 1.0, // cage width / height
+    BOX_STEP_PX: 2, // search step in analysis pixels
+    EDGE_MIN: 18, // horizontal brightness step (0-255) that counts as an edge
+    VERT_RATIO: 2.0, // ...and it must beat the vertical step by this factor (so it is a vertical line)
+    MIN_DENSITY: 0.25, // fraction of box pixels that must be vertical edge
+    SURROUND_W: 1.0, // weight of the dense-on-both-sides penalty (fences, tree lines)
+    MIN_SCORE: 0.20, // density minus the denser neighbour, below this the scan finds nothing
+    HISTORY: 12, // scans remembered (12 scans = 3 s)
+    STABLE_FRAC: 0.8, // this share of them must agree on one x before it is accepted
+    STABLE_TOL: 0.012, // ...within this x distance (fraction of frame width)
+    EXCLUDE_PAD: 0.03, // margin added around the player's x span (the player is never the basket)
+    EXCLUDE_TTL_MS: 1000, // a player span older than this is ignored
+  },
+
+  // Chain-rattle detector (Web Audio). Levels are dB relative to full scale, per FFT bin.
+  CHAIN: {
+    FFT_SIZE: 1024, // ~21 ms window, ~47 Hz bins at 48 kHz
+    POLL_MS: 15, // how often the spectrum is read
+    LOW_HZ: [80, 800], // thump band (footsteps, wind rumble)
+    HF_EDGES_HZ: [2000, 3500, 5500, 8000, 12000], // the chain band, as four sub-bands
+    WARMUP_MS: 1500, // no events until the noise floor has settled
+    MIN_FLOOR_DB: -95, // floors never go below this, so digital silence cannot fake huge rises
+    FLOOR_TAU_UP_MS: 4000, // noise floor follows rising sound this slowly (absorbs steady wind)
+    FLOOR_TAU_UP_FAST_MS: 1200, // ...and this fast after a too-long burst
+    FLOOR_TAU_DOWN_MS: 400, // ...and falling sound this fast
+    ONSET_DB: 12, // chain band must jump this far above its floor
+    ATTACK_DB: 8, // ...and rise this much within ATTACK_MS (wind builds slower)
+    ATTACK_MS: 100,
+    BAND_RISE_DB: 8, // a sub-band counts as "hit" at this rise
+    MIN_BANDS: 3, // sub-bands (of 4) that must be hit: the broadband test
+    LOW_DOMINANCE_DB: 6, // reject if the low band rose this much more than the chain band (thump)
+    END_DB: 6, // burst is over when the rise stays below this for HANG_MS
+    HANG_MS: 80,
+    MIN_DUR_MS: 50, // shorter than this is a click, not a rattle
+    MAX_DUR_MS: 900, // longer than this is wind or speech: ignored
+    MIN_PEAK_DB: -85, // absolute level the burst must reach (per-bin dBFS in the chain band)
+    DEAD_DB: -130, // chain band quieter than this for DEAD_MS means a muted mic: NO AUDIO
+    DEAD_MS: 3000,
+  },
+
+  // ?debug=1 clip recorder
+  DEBUG_REC: {
+    MAX_MS: 30000, // a clip stops by itself at this length
+    VIDEO_BPS: 6000000,
+    AUDIO_BPS: 128000,
   },
 
   // Debug-only simulated throw values (?debug=1)

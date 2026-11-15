@@ -1,4 +1,5 @@
-// main.js - wires setup, state machine, display, camera, pose tracking and (debug only) the simulator.
+// main.js - wires setup, state machine, display, camera, pose tracking, basket finder, chain-sound
+// detector and (debug only) the simulator.
 
 import { CONFIG } from './config.js';
 import { SCREEN, createState, reduce, isFlash } from './state.js';
@@ -8,6 +9,7 @@ import * as cam from './camera.js';
 import { createPose } from './pose.js';
 import { createRoundTracker } from './round.js';
 import { createThrowDetector } from './throws.js';
+import { createBasketFinder, createChainDetector, playerSpan } from './outcome.js';
 
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 
@@ -63,6 +65,27 @@ const detector = createThrowDetector({
       missDirection: null,
       now: Date.now(),
     });
+  },
+});
+
+// Phase 5a: the basket is located automatically (outcome.js). When it is found, its x replaces the
+// temporary Phase 3 value and the FINDING BASKET screen clears. A manual tap (debug) or a fixed
+// CONFIG.BASKET_X_NORM overrides the search.
+const finder = createBasketFinder({
+  onFound(xn) {
+    tracker.setBasketX(xn);
+    pushBasketFlag();
+  },
+});
+
+// Chain-rattle events. Phase 5b will pair these with the disc reaching the basket to call a make.
+// The audio flag now means "mic open, AudioContext running and not silent".
+const chains = createChainDetector({
+  onChain(ev) {
+    if (DEBUG) console.info('chain', ev);
+  },
+  onStatus(ok) {
+    dispatch({ type: 'flags', patch: { audio: ok } });
   },
 });
 
@@ -128,6 +151,7 @@ function pushFeed() {
 function onPoseFrame(frame) {
   if (state.screen === SCREEN.SETUP) return;
   lastFrame = frame;
+  finder.setExclude(playerSpan(frame.landmarks)); // the player is never the basket
   const now = performance.now();
   const out = tracker.update(frame, now, state);
   syncFlags({ player: out.flags.player, stable: out.flags.stable });
@@ -164,11 +188,10 @@ function applyFeedMode() {
 }
 
 function onBasketTap(x) {
-  tracker.setBasketX(x);
+  finder.lock(x); // manual override: stops the search and sets the basket x
   tapArmed = false;
   display.onFeedTap(null);
   applyFeedMode();
-  pushBasketFlag();
 }
 
 const basketTools = {
@@ -183,6 +206,7 @@ const basketTools = {
   },
   clear() {
     tracker.setBasketX(null);
+    finder.reset(); // search again
     pushBasketFlag();
   },
 };
@@ -212,6 +236,8 @@ function exitFullscreen() {
 // ---- Session ----------------------------------------------------------------
 
 async function releaseDevices() {
+  finder.stop();
+  chains.close();
   cam.stopCamera(display.video);
   cam.stopMic();
   await cam.releaseWakeLock();
@@ -219,10 +245,12 @@ async function releaseDevices() {
 
 async function startSession({ heightIn } = {}) {
   enterFullscreen();
+  chains.prepare(); // must happen inside the Start tap or Chrome keeps the AudioContext suspended
   setup.setBusy(true);
   tracker.reset();
   detector.reset();
   tracker.setHeightIn(heightIn || CONFIG.HEIGHT_DEFAULT_IN);
+  tracker.setBasketX(CONFIG.BASKET_X_NORM); // forget the last session's basket: the phone may have moved
   lastFrame = null;
   lastFlags = {};
   dispatch({ type: 'start', sessionId: `s${Date.now()}`, camera: false, audio: false });
@@ -236,13 +264,14 @@ async function startSession({ heightIn } = {}) {
     if (stopped()) return releaseDevices();
     dispatch({ type: 'flags', patch: { camera: true } });
     pose.start(); // loads the model in the background; the feed read-out says MODEL LOADING
+    if (CONFIG.BASKET_X_NORM == null) finder.start(display.video); // else the fixed x is used
   } catch (err) {
     console.warn('camera failed:', err);
   }
   try {
     await cam.startMic({ onEnded: () => dispatch({ type: 'flags', patch: { audio: false } }) });
     if (stopped()) return releaseDevices();
-    dispatch({ type: 'flags', patch: { audio: true } });
+    await chains.attach(cam.getStreams().audio); // sets the audio flag through onStatus
   } catch (err) {
     console.warn('microphone failed:', err);
   }
@@ -283,4 +312,8 @@ if (DEBUG) {
     getTrace: detector.getTrace,
   });
   setInterval(() => debugPanel.update(), 1000); // keeps the fps readout fresh
+  const { createOutcomeDebug } = await import('./outcome-debug.js');
+  createOutcomeDebug(debugRoot, {
+    video: display.video, finder, chains, getStreams: cam.getStreams,
+  });
 }
