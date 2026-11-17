@@ -184,6 +184,89 @@ export const CONFIG = {
     DEAD_MS: 3000,
   },
 
+  // ---- Phase 5b: disc tracking and make/miss (outcome.js) -------------------------------------
+  // All first guesses, deliberately conservative: when in doubt the throw is IGNORED.
+  // Units: u = distance along the putt line from the basket centre in cage widths (negative =
+  // before the basket, positive = beyond it); v = vertical offset from the cage centre in cage
+  // heights (positive = down). ft = feet at the throwing spot's scale.
+  OUTCOME: {
+    // Frame source (a background model and frame difference inside a corridor around the putt line)
+    ANALYSIS_W: 960, // the video is scaled to this width for analysis (disc is ~15 px wide here)
+    BG_ALPHA: 0.02, // background follows the scene at this rate per frame (a resting disc fades in ~2 s)
+    FG_THRESH: 28, // brightness difference from the background that counts as foreground (0-255)
+    MOVE_THRESH: 20, // brightness difference from the previous frame that counts as moving
+    MIN_BLOB_PX: 8, // smaller blobs are noise (analysis pixels)
+    MAX_BLOB_PX: 500, // bigger blobs are people, shadows, cloud edges
+    MAX_BLOB_DIM_PX: 48,
+    MAX_BLOBS: 10, // kept per frame (largest first)
+    WARMUP_FRAMES: 20, // frames after (re)start before blobs are trusted
+    NOISE_FG_FRAC: 0.02, // more foreground than this in the corridor = the picture is too busy to judge
+    FRAME_BUF_MS: 7000,
+    // Corridor (fractions of the frame): from the thrower to past the basket, around the cage
+    ROI_UP_H: 3.0, // cage heights above the cage top
+    ROI_DOWN_H: 3.5, // cage heights below the cage bottom (the ground at the pole)
+    ROI_BEYOND_W: 3.0, // cage widths beyond the cage centre
+    ROI_BEHIND: 0.03, // frame widths behind the thrower
+    // Gates on the scene (a failure ignores every throw)
+    BOX_FT: [1.0, 4.0], // cage width and height must be in this range at the thrower's scale
+    ANCHOR_FT: [6, 50], // thrower to basket distance must be in this range
+    // Flight tracking
+    PRE_MS: 150, // frames this long before the release time are searched for the disc
+    START_WINDOW_MS: 450, // the disc must first be seen within this long after the release
+    START_RADIUS_FT: 5, // ...and within this distance of the hand
+    PLAYER_PAD_FT: 1.0, // blobs this close to the body are the body, except right after release
+    PLAYER_FREE_MS: 300,
+    MIN_MOVE: 0.3, // share of a blob's pixels that also changed since the last frame, for flight
+    GATE_FT: 1.0, // how far from the predicted position the next detection may be
+    G_FTS2: 32.2,
+    VX_MIN_FTS: 12, // forward speed range of a putt (ft/s)
+    V_MAX_FTS: 90,
+    MAX_GAP_MS: 110, // longest gap between two detections of one track
+    MIN_TRACK_PTS: 4,
+    DENSITY_MIN: 0.35, // share of frames along the flight in which the disc was seen: below MIN a make is
+    DENSITY_FULL: 0.65, // impossible (the exit could have been missed too), at FULL this factor is 1
+    MAX_TRACK_RMS_FT: 0.8, // x(t) line fit and y(t) parabola fit residual
+    FLIGHT_WAIT_MS: 2600, // no track by this long after the release = ignored
+    HORIZON_MS: 4500, // hard end of a throw's evaluation
+    // Zones around the cage (u, v units, see above)
+    CORE_U: 0.75, // inside this and CORE_V the disc counts as "in the cage"
+    CORE_V: 0.75,
+    ARRIVE_U: 0.9, // a detection this near the cage in u and
+    ARRIVE_V: 0.8, // ...in v counts as arriving (above the cage top or below the tray does not)
+    INFER_U: 1.6, // track ended this close in u may still be taken as arriving (with chain audio)
+    PASS_U: 1.3, // detections this far beyond the cage mean the disc flew past
+    REST_OUT_U: 1.0, // a resting disc outside this |u| or REST_OUT_V is out of the basket;
+    REST_OUT_V: 1.0, // between the core and this it is ambiguous (blocks a make, scores nothing)
+    EXIT_U: 1.1, // moving blobs outside this |u| or EXIT_V, after contact, count as leaving the cage
+    EXIT_V: 1.2,
+    EXIT_MAX_U: 3, // ...but only this far from the cage along the line, and
+    EXIT_V_RANGE: [-1.5, 3.5], // ...within this range of v (a bounced disc stays near the pole)
+    EXIT_GRACE_MS: 80, // ...starting this long after contact
+    EXIT_WEAK_FRAMES: 2, // this many frames with stray moving blobs there block a make
+    EXIT_BASE_MAX: 0.25, // share of quiet frames before the throw with such blobs: above this the scene is too busy
+    TRACK_LOST_MS: 1500, // track ended short of the cage and nothing new for this long = ignored
+    // Resting-disc test (a disc that landed or dropped out)
+    REST_FRAMES: 5, // frames a static blob must persist
+    REST_MOVE_MAX: 0.2,
+    REST_RADIUS_FT: 0.6,
+    REST_NEAR_TRACK_FT: 8, // the resting blob must be this close to where the disc was last seen
+    // Contact and settling
+    AUDIO_MATCH_MS: [-250, 450], // chain burst start relative to the arrival time
+    SETTLE_MS: 1000, // wait this long after contact before calling a make
+    AUDIO_LATE_MS: 700, // extra wait for a late audio event
+    EXIT_MIN_PTS: 3, // an exit track (disc leaving the cage) needs this many detections
+    MIN_FPS: 15, // frames per second in the settle window needed to trust "nothing left"
+    MAX_GAP_SETTLE_MS: 150,
+    // Confidence needed to show a verdict (each is the weakest of several 0-1 factors)
+    CONF_MIN_MAKE: 0.7,
+    CONF_MIN_MISS: 0.6,
+    ALLOW_INFERRED_ARRIVAL: true,
+    // Late verdicts at round end
+    ROUND_END_HOLD_MAX_MS: 4000, // longest a round end waits for a throw still being judged
+    POST_FLASH_HOLD_MS: 1000, // after a make/miss verdict the round end waits this long so it can be seen
+    LOG_N: 12, // verdicts kept for the debug read-out
+  },
+
   // ?debug=1 clip recorder
   DEBUG_REC: {
     MAX_MS: 30000, // a clip stops by itself at this length

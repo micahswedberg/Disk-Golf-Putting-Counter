@@ -1,6 +1,7 @@
-// outcome-debug.js - ?debug=1 section for Phase 5a. Loaded only in debug mode.
-// Shows what the basket finder and the chain-sound detector see, and records short local
-// video + audio clips (downloaded to the phone) so detection can be tuned against real footage.
+// outcome-debug.js - ?debug=1 section for Phases 5a and 5b. Loaded only in debug mode.
+// Shows what the basket finder, the chain-sound detector and the disc tracker see (blobs, track,
+// verdicts with their confidence factors), copies the verdict log, and records short local video +
+// audio clips (downloaded to the phone) so detection can be tuned against real footage.
 // No detection logic lives here.
 
 import { CONFIG } from './config.js';
@@ -8,10 +9,12 @@ import { CONFIG } from './config.js';
 const f = (v, d = 1) => (v == null || !Number.isFinite(v) ? '--' : v.toFixed(d));
 
 /**
- * createOutcomeDebug(root, { video, finder, chains, getStreams })
+ * createOutcomeDebug(root, { video, finder, chains, getStreams, outcome })
  * Appends a collapsible section to `root`. Returns { update() } (cheap; call a few times a second).
  */
-export function createOutcomeDebug(root, { video, finder, chains, getStreams }) {
+export function createOutcomeDebug(root, {
+  video, finder, chains, getStreams, outcome,
+}) {
   const B = CONFIG.BASKET;
   const C = CONFIG.CHAIN;
   const R = CONFIG.DEBUG_REC;
@@ -48,6 +51,12 @@ export function createOutcomeDebug(root, { video, finder, chains, getStreams }) 
   };
   button('Re-find basket', () => finder.reset());
   const recBtn = button('Record clip', () => (rec ? stopRecording() : startRecording()));
+  const logBtn = button('Copy verdict log', async () => {
+    const log = outcome.getInfo().judge.log;
+    const text = log.map((l) => JSON.stringify(l)).join('\n') || 'no verdicts yet';
+    try { await navigator.clipboard.writeText(text); logBtn.textContent = 'Copied!'; } catch (_) { logBtn.textContent = 'Copy failed'; }
+    setTimeout(() => { logBtn.textContent = 'Copy verdict log'; }, 1500);
+  });
 
   // ---- Clip recorder ------------------------------------------------------------------------
   let rec = null;
@@ -189,6 +198,33 @@ export function createOutcomeDebug(root, { video, finder, chains, getStreams }) 
       vg.strokeRect((b.xn - b.wn / 2) * W, (b.yn - b.hn / 2) * H, b.wn * W, b.hn * H);
     };
     if (info.candidate) box(info.candidate, '#ffb000', 2);
+    // Disc tracker: corridor, latest blobs, and the newest track (pending throw, else last verdict).
+    const oi = outcome.getInfo();
+    if (oi.watcher.roi) {
+      const r = oi.watcher.roi;
+      vg.strokeStyle = 'rgba(255,255,255,0.7)';
+      vg.setLineDash([5, 4]);
+      vg.strokeRect(r.x0 * W, r.y0 * H, (r.x1 - r.x0) * W, (r.y1 - r.y0) * H);
+      vg.setLineDash([]);
+    }
+    if (oi.frame) {
+      for (const q of oi.frame.blobs) {
+        vg.strokeStyle = q.move >= CONFIG.OUTCOME.MIN_MOVE ? '#4dd' : '#999';
+        vg.lineWidth = 1;
+        vg.strokeRect(q.x * W - 4, q.y * H - 4, 8, 8);
+      }
+    }
+    const pend = oi.judge.pending.find((p) => p.last && p.last.ev && p.last.ev.trk);
+    const lastV = oi.judge.log[oi.judge.log.length - 1];
+    const trkPts = pend ? pend.last.ev.trk.pts : (lastV && lastV.ev && lastV.ev.trk ? lastV.ev.trk.pts : null);
+    if (trkPts) {
+      vg.strokeStyle = '#f0f';
+      vg.lineWidth = 2;
+      vg.beginPath();
+      trkPts.forEach((p, i) => { if (i) vg.lineTo(p[0] * W, p[1] * H); else vg.moveTo(p[0] * W, p[1] * H); });
+      vg.stroke();
+      for (const p of trkPts) vg.fillRect(p[0] * W - 2, p[1] * H - 2, 4, 4);
+    }
     const L = info.locked;
     if (L) {
       vg.strokeStyle = '#00d84a';
@@ -196,6 +232,37 @@ export function createOutcomeDebug(root, { video, finder, chains, getStreams }) 
       vg.beginPath(); vg.moveTo(L.xn * W, 0); vg.lineTo(L.xn * W, H); vg.stroke();
       if (L.yn != null) box(L, '#00d84a', 3);
     }
+  }
+
+  // ---- Disc tracker / verdict read-out --------------------------------------------------------
+  const pct = (v) => (v == null ? '--' : f(v, 2));
+  const factorText = (fa) => Object.entries(fa || {}).map(([k, v]) => `${k} ${pct(v)}`).join(' ');
+  function outcomeLines() {
+    const o = outcome.getInfo();
+    const w = o.watcher;
+    const lines = [
+      `disc: gate ${o.gate === null ? 'ok' : o.gate} \u00b7 watcher ${w.roi ? 'on' : 'idle'} ${f(w.fps, 0)} fps ${f(w.ms, 1)} ms`
+        + ` \u00b7 fg ${f(w.fgOut * 100, 2)}% \u00b7 ${w.w}x${w.h}px \u00b7 blobs ${o.frame ? o.frame.blobs.length : 0}`
+        + (o.frame && o.frame.dropped ? ` \u00b7 dropped ${o.frame.dropped}` : ''),
+    ];
+    for (const p of o.judge.pending) {
+      const l = p.last;
+      lines.push(`  WAIT #${p.id} ${f((performance.now() - p.t) / 1000)} s`
+        + (l && l.ev && l.ev.trk ? ` \u00b7 track ${l.ev.trk.n} pts rms ${f(l.ev.trk.rms, 2)} dens ${pct(l.ev.trk.density)}` : ' \u00b7 no track yet')
+        + (l && l.ev && l.ev.arr ? ` \u00b7 arrived${l.ev.arr.inferred ? ' (inferred)' : ''}` : ''));
+    }
+    for (const v of o.judge.log.slice(-4).reverse()) {
+      const e = v.ev || {};
+      lines.push(`  #${v.id} ${v.result.toUpperCase()}${v.dir ? ` ${v.dir}` : ''} \u00b7 conf ${pct(v.conf)} \u00b7 ${v.reason}`
+        + ` \u00b7 ${f(v.distanceFt, 0)} ft \u00b7 after ${f(v.decidedAfterMs / 1000)} s`);
+      lines.push(`     ${e.trk ? `trk ${e.trk.n} pts rms ${f(e.trk.rms, 2)} dens ${pct(e.trk.density)} \u00b7 ` : ''}`
+        + `${e.chain ? `chain ${f(e.chain.dtMs, 0)} ms rise ${f(e.chain.riseDb, 0)} dB \u00b7 ` : ''}`
+        + `${e.rest ? `rest u ${f(e.rest.u)} v ${f(e.rest.v)} x${e.rest.count} \u00b7 ` : ''}`
+        + `${e.exit ? `exit ${e.exit.n} pts \u00b7 ` : ''}`
+        + `${e.cover ? `fps ${f(e.cover.fps, 0)} gap ${f(e.cover.maxGapMs, 0)} \u00b7 ` : ''}`
+        + `base ${pct(e.baseFrac)} weak ${e.exitWeakFrames ?? '--'} \u00b7 ${factorText(e.factors)}`);
+    }
+    return lines;
   }
 
   // ---- Readout ------------------------------------------------------------------------------
@@ -222,6 +289,7 @@ export function createOutcomeDebug(root, { video, finder, chains, getStreams }) 
       ...lastEv.map((e) => `  CHAIN ${f((now - e.t) / 1000)} s ago \u00b7 dur ${f(e.durMs, 0)} ms \u00b7 peak ${f(e.peakDb, 0)} dB`
         + ` \u00b7 rise ${f(e.riseDb)} \u00b7 low ${f(e.lowRiseDb)} \u00b7 bands ${e.bandsHit}`),
       recNote ? `rec: ${recNote}` : `rec: up to ${R.MAX_MS / 1000} s per clip`,
+      ...outcomeLines(),
     ].join('\n');
   }
 

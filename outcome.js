@@ -1,12 +1,16 @@
-// outcome.js - Phase 5a: basket location and chain-sound detection.
-// (Disc tracking and make/miss classification are NOT here yet.)
+// outcome.js - basket location, chain-sound detection (Phase 5a), disc tracking and make/miss
+// (Phase 5b).
 //
-// Two independent parts:
-//   1. createBasketFinder  finds the basket's x position in the raw camera frame.
+//   1. createBasketFinder  finds the basket's box in the raw camera frame.
 //   2. createChainDetector listens to the mic and emits an event for each chain-rattle burst.
+//   3. createDiscWatcher   video -> small moving blobs inside a corridor around the putt line.
+//   4. analyzeThrow        pure: blobs + chain events -> make / miss / ignored, with confidence.
+//   5. createOutcomeJudge  queue of throws waiting for their result.
+//   6. createOutcomeTracker wires 3 and 5 to the app (this is what main.js uses).
 //
-// Both keep their signal maths in pure, DOM-free functions (findBasketCandidate, bandsFromSpectrum,
-// createSpikeLogic) so they can be tested without a browser. All numbers live in config.js.
+// The signal maths is in pure, DOM-free functions (findBasketCandidate, bandsFromSpectrum,
+// createSpikeLogic, detectBlobs, analyzeThrow) so they can be tested without a browser.
+// All numbers live in config.js.
 // Coordinates: x, y are normalized to the RAW (unmirrored) camera frame, like round.js.
 
 import { CONFIG } from './config.js';
@@ -492,6 +496,806 @@ export function createChainDetector({ onChain, onStatus } = {}) {
       levels,
       live: logic.getLive(),
       events: events.map((e) => ({ ...e })),
+    }),
+  };
+}
+
+// ===========================================================================================
+// 3. DISC WATCHER  (video -> small moving blobs, Phase 5b)
+//
+// The disc is only ~15 px wide at the analysis width, so nothing clever is possible: a slow
+// background model plus a frame difference, inside a corridor around the putt line, then connected
+// components. A flying disc shows up as a small blob that also changed since the previous frame
+// (move ~ 1); a resting disc is a small blob that did not (move ~ 0). Everything that decides what
+// the blobs mean is in analyzeThrow (section 4), which is pure.
+// The camera delivers 30 fps on the Pixel 6 Pro, so a putt is only a few dozen frames long.
+// ===========================================================================================
+
+let stackBuf = null;
+
+/**
+ * Pure. One analysis frame -> foreground blobs, and the background model is updated in place.
+ *   luma, prev  Uint8 grey images (prev may be null on the first frame)
+ *   bg          Float32Array background model, updated in place
+ *   playerPx    { x0, x1, y0, y1 } in analysis pixels: foreground inside it is not counted in fgOut
+ * Returns { blobs: [{ x, y, w, h, area, move }] (analysis px, largest first), fgOut (0-1) }.
+ */
+export function detectBlobs(luma, prev, bg, w, h, cfg = CONFIG.OUTCOME, playerPx = null) {
+  const n = w * h;
+  const fg = new Uint8Array(n);
+  const T = cfg.FG_THRESH;
+  const MT = cfg.MOVE_THRESH;
+  const a = cfg.BG_ALPHA;
+  let fgOut = 0;
+  for (let i = 0; i < n; i += 1) {
+    const l = luma[i];
+    const d = l - bg[i];
+    if (d > T || d < -T) {
+      let m = 1;
+      if (prev) {
+        const e = l - prev[i];
+        if (e > MT || e < -MT) m = 2;
+      }
+      fg[i] = m;
+      if (playerPx) {
+        const y = (i / w) | 0;
+        const x = i - y * w;
+        if (x < playerPx.x0 || x > playerPx.x1 || y < playerPx.y0 || y > playerPx.y1) fgOut += 1;
+      } else {
+        fgOut += 1;
+      }
+    }
+    bg[i] += d * a;
+  }
+
+  if (!stackBuf || stackBuf.length < n) stackBuf = new Int32Array(n);
+  const stack = stackBuf;
+  const blobs = [];
+  for (let s = 0; s < n; s += 1) {
+    if (!fg[s]) continue;
+    let sp = 0;
+    stack[sp] = s * 2 + (fg[s] === 2 ? 1 : 0);
+    sp += 1;
+    fg[s] = 0;
+    let area = 0; let mv = 0; let sx = 0; let sy = 0;
+    let x0 = w; let x1 = -1; let y0 = h; let y1 = -1;
+    while (sp > 0) {
+      sp -= 1;
+      const code = stack[sp];
+      const i = code >> 1;
+      mv += code & 1;
+      const y = (i / w) | 0;
+      const x = i - y * w;
+      area += 1; sx += x; sy += y;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          const j = yy * w + xx;
+          if (fg[j]) {
+            stack[sp] = j * 2 + (fg[j] === 2 ? 1 : 0);
+            sp += 1;
+            fg[j] = 0;
+          }
+        }
+      }
+    }
+    const bw = x1 - x0 + 1;
+    const bh = y1 - y0 + 1;
+    if (area < cfg.MIN_BLOB_PX || area > cfg.MAX_BLOB_PX) continue;
+    if (bw > cfg.MAX_BLOB_DIM_PX || bh > cfg.MAX_BLOB_DIM_PX) continue;
+    blobs.push({ x: sx / area + 0.5, y: sy / area + 0.5, w: bw, h: bh, area, move: mv / area });
+  }
+  blobs.sort((p, q) => q.area - p.area);
+  if (blobs.length > cfg.MAX_BLOBS) blobs.length = cfg.MAX_BLOBS;
+  return { blobs, fgOut: fgOut / n };
+}
+
+/** Pure. The corridor (raw-frame fractions) the disc can fly through: thrower to past the cage. */
+export function corridorRoi(scene, cfg = CONFIG.OUTCOME) {
+  const b = scene.box;
+  const far = b.xn + scene.dir * b.wn * cfg.ROI_BEYOND_W;
+  const near = scene.anchor.xn - scene.dir * cfg.ROI_BEHIND;
+  const c = (v) => Math.min(Math.max(v, 0), 1);
+  return {
+    x0: c(Math.min(far, near)),
+    x1: c(Math.max(far, near)),
+    y0: c(b.yn - b.hn / 2 - cfg.ROI_UP_H * b.hn),
+    y1: c(b.yn + b.hn / 2 + cfg.ROI_DOWN_H * b.hn),
+  };
+}
+
+/** Padded bounding box (raw-frame fractions) of the visible pose landmarks, or null. */
+export function playerBox(landmarks, padX = 0, padY = 0) {
+  if (!landmarks) return null;
+  let x0 = Infinity; let x1 = -Infinity; let y0 = Infinity; let y1 = -Infinity;
+  for (const p of landmarks) {
+    if ((p.visibility ?? 0) < 0.3) continue;
+    if (p.x < x0) x0 = p.x;
+    if (p.x > x1) x1 = p.x;
+    if (p.y < y0) y0 = p.y;
+    if (p.y > y1) y1 = p.y;
+  }
+  return x1 >= x0 ? { x0: x0 - padX, x1: x1 + padX, y0: y0 - padY, y1: y1 + padY } : null;
+}
+
+/**
+ * createDiscWatcher({ video, onFrame })
+ *   start() / stop()   frame loop (requestVideoFrameCallback, else a 33 ms timer)
+ *   setRoi(roi|null)   corridor in raw-frame fractions; null pauses the analysis
+ *   setPlayer(box|null) padded body box (raw-frame fractions) kept out of the noise measure
+ *   reset()            forget the background model
+ *   onFrame({ t, blobs, fgOut, ms, dropped, warm, player })  blobs in raw-frame fractions, t in
+ *                      performance.now() ms
+ */
+export function createDiscWatcher({ video, onFrame } = {}) {
+  const C = CONFIG.OUTCOME;
+  const canvas = document.createElement('canvas');
+  const g = canvas.getContext('2d', { willReadFrequently: true });
+
+  let roi = null;
+  let player = null;
+  let running = false;
+  let handle = 0;
+  let rvfc = false;
+  let cw = 0; let ch = 0;
+  let bg = null; let prev = null; let luma = null;
+  let frameNo = 0;
+  let lastPresented = null;
+  let msAvg = 0; let fps = 0; let fpsN = 0; let fpsT = 0;
+  let total = 0;
+  let lastFg = 0;
+
+  function reset() { bg = null; prev = null; frameNo = 0; lastPresented = null; }
+
+  function setRoi(r) {
+    const same = roi && r
+      && Math.abs(roi.x0 - r.x0) < 0.004 && Math.abs(roi.x1 - r.x1) < 0.004
+      && Math.abs(roi.y0 - r.y0) < 0.004 && Math.abs(roi.y1 - r.y1) < 0.004;
+    if (same) return;
+    roi = r ? { ...r } : null;
+    reset();
+  }
+
+  function tick(now, meta) {
+    if (!running) return;
+    schedule();
+    if (!roi || !video || video.readyState < 2 || !video.videoWidth) return;
+    const t0 = performance.now();
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const s = Math.min(1, C.ANALYSIS_W / vw);
+    const sx = roi.x0 * vw; const sy = roi.y0 * vh;
+    const sw = (roi.x1 - roi.x0) * vw; const sh = (roi.y1 - roi.y0) * vh;
+    const w = Math.max(16, Math.round(sw * s));
+    const h = Math.max(16, Math.round(sh * s));
+    if (!bg || w !== cw || h !== ch) {
+      cw = w; ch = h;
+      canvas.width = w; canvas.height = h;
+      bg = new Float32Array(w * h);
+      luma = new Uint8Array(w * h);
+      prev = null;
+      frameNo = 0;
+    }
+    g.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
+    const px = g.getImageData(0, 0, w, h).data;
+    for (let i = 0, j = 0; i < luma.length; i += 1, j += 4) {
+      luma[i] = (77 * px[j] + 150 * px[j + 1] + 29 * px[j + 2]) >> 8;
+    }
+    if (frameNo === 0) for (let i = 0; i < luma.length; i += 1) bg[i] = luma[i];
+    const rw = roi.x1 - roi.x0;
+    const rh = roi.y1 - roi.y0;
+    const pp = player
+      ? {
+        x0: ((player.x0 - roi.x0) / rw) * w,
+        x1: ((player.x1 - roi.x0) / rw) * w,
+        y0: ((player.y0 - roi.y0) / rh) * h,
+        y1: ((player.y1 - roi.y0) / rh) * h,
+      }
+      : null;
+    const res = detectBlobs(luma, prev, bg, w, h, C, pp);
+    if (!prev) prev = new Uint8Array(w * h);
+    prev.set(luma);
+    frameNo += 1;
+    lastFg = res.fgOut;
+
+    const presented = meta && Number.isFinite(meta.presentedFrames) ? meta.presentedFrames : null;
+    const dropped = presented != null && lastPresented != null ? Math.max(0, presented - lastPresented - 1) : 0;
+    lastPresented = presented;
+    const ms = performance.now() - t0;
+    msAvg = msAvg ? 0.9 * msAvg + 0.1 * ms : ms;
+    total += 1;
+    fpsN += 1;
+    if (now - fpsT >= 1000) { fps = (fpsN * 1000) / (now - fpsT); fpsN = 0; fpsT = now; }
+
+    if (onFrame) {
+      onFrame({
+        t: meta && meta.captureTime ? meta.captureTime : now,
+        blobs: res.blobs.map((b) => ({
+          x: roi.x0 + (b.x / w) * rw,
+          y: roi.y0 + (b.y / h) * rh,
+          w: (b.w / w) * rw,
+          h: (b.h / h) * rh,
+          area: b.area,
+          move: b.move,
+        })),
+        fgOut: res.fgOut,
+        ms,
+        dropped,
+        warm: frameNo <= C.WARMUP_FRAMES,
+        player: player ? { ...player } : null,
+      });
+    }
+  }
+
+  function schedule() {
+    if (rvfc) handle = video.requestVideoFrameCallback(tick);
+  }
+
+  return {
+    start() {
+      if (running || !video) return;
+      running = true;
+      rvfc = 'requestVideoFrameCallback' in video;
+      if (rvfc) schedule();
+      else handle = setInterval(() => tick(performance.now(), null), 33);
+    },
+    stop() {
+      running = false;
+      if (rvfc) { try { video.cancelVideoFrameCallback(handle); } catch (_) { /* ignore */ } } else clearInterval(handle);
+      handle = 0;
+    },
+    setRoi,
+    setPlayer(b) { player = b; },
+    reset,
+    getInfo: () => ({
+      running, roi: roi ? { ...roi } : null, w: cw, h: ch, ms: msAvg, fps, frames: total, fgOut: lastFg,
+    }),
+  };
+}
+
+// ===========================================================================================
+// 4. MAKE / MISS ANALYSIS  (pure; no DOM, no timers)
+//
+// Coordinates: u = distance along the putt line from the cage centre, in cage widths (negative =
+// short of the basket); v = offset from the cage centre in cage heights (positive = down).
+// Evidence, in the order it is used:
+//   flight track  a ballistic chain of moving blobs that starts at the hand and heads for the cage
+//   pass          the track carries on beyond the cage             -> MISS (long)
+//   rest          a NEW still blob (a landed disc) outside the cage -> MISS (short / long)
+//   exit          a moving track leaving the cage after contact    -> MISS (bounce / drop out)
+//   make          track reached the cage, chain sound at contact, then SETTLE_MS with the video
+//                 healthy, no exit, no resting disc outside the cage
+// Anything else is IGNORED. The chain sound alone never scores, and a make needs both the
+// flight and the sound.
+// ===========================================================================================
+
+const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
+const inBox = (p, bx) => !!bx && p.x >= bx.x0 && p.x <= bx.x1 && p.y >= bx.y0 && p.y <= bx.y1;
+const median2 = (a) => {
+  if (!a.length) return null;
+  const s = [...a].sort((x, y) => x - y);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
+/** Pure. null if the basket box and scale can be trusted, else a short reason. */
+export function checkScene(scene, cfg = CONFIG.OUTCOME) {
+  if (!scene || !scene.box) return 'no basket box';
+  const b = scene.box;
+  if (b.yn == null || b.wn == null || b.hn == null) return 'basket box unknown (manual tap)';
+  if (!scene.anchor || !scene.ftPerNormX || !scene.aspect) return 'no scale';
+  const wFt = b.wn * scene.ftPerNormX;
+  const hFt = (b.hn * scene.ftPerNormX) / scene.aspect;
+  if (wFt < cfg.BOX_FT[0] || wFt > cfg.BOX_FT[1] || hFt < cfg.BOX_FT[0] || hFt > cfg.BOX_FT[1]) {
+    return `basket box implausible (${wFt.toFixed(1)} x ${hFt.toFixed(1)} ft)`;
+  }
+  const d = scene.anchor.distanceFt;
+  if (d == null || d < cfg.ANCHOR_FT[0] || d > cfg.ANCHOR_FT[1]) {
+    return `basket distance implausible (${d == null ? '--' : d.toFixed(0)} ft)`;
+  }
+  return null;
+}
+
+/** Least-squares fit of a ballistic path to track points (feet). */
+function fitTrack(pts, cfg) {
+  const n = pts.length;
+  const t0 = pts[0].t;
+  const s = pts.map((p) => (p.t - t0) / 1000);
+  const lin = (ys) => {
+    const sm = s.reduce((a, v) => a + v, 0) / n;
+    const ym = ys.reduce((a, v) => a + v, 0) / n;
+    let num = 0; let den = 0;
+    for (let i = 0; i < n; i += 1) { num += (s[i] - sm) * (ys[i] - ym); den += (s[i] - sm) ** 2; }
+    const b = den > 1e-9 ? num / den : 0;
+    return { a: ym - b * sm, b };
+  };
+  const fx = lin(pts.map((p) => p.fx));
+  const fy = lin(pts.map((p, i) => p.fy - 0.5 * cfg.G_FTS2 * s[i] * s[i]));
+  let ss = 0;
+  for (let i = 0; i < n; i += 1) {
+    ss += (pts[i].fx - (fx.a + fx.b * s[i])) ** 2
+      + (pts[i].fy - (fy.a + fy.b * s[i] + 0.5 * cfg.G_FTS2 * s[i] * s[i])) ** 2;
+  }
+  return { t0, x0: fx.a, vx: fx.b, y0: fy.a, vy: fy.b, rms: Math.sqrt(ss / n) };
+}
+
+/** Greedy extension of a seed pair along a ballistic prediction. */
+function growTrack(cf, j0, pts, vx0, vy0, cfg) {
+  let last = pts[pts.length - 1];
+  let vx = vx0;
+  let vy = vy0;
+  for (let k = j0 + 1; k < cf.length; k += 1) {
+    const dtMs = cf[k].t - last.t;
+    if (dtMs <= 0) continue;
+    if (dtMs > cfg.MAX_GAP_MS) break;
+    const dt = dtMs / 1000;
+    const px = last.fx + vx * dt;
+    const py = last.fy + vy * dt + 0.5 * cfg.G_FTS2 * dt * dt;
+    let hit = null;
+    let bd = cfg.GATE_FT;
+    for (const c of cf[k].c) {
+      const d = Math.hypot(c.fx - px, c.fy - py);
+      if (d < bd) { bd = d; hit = c; }
+    }
+    if (hit) {
+      vx = 0.5 * vx + 0.5 * ((hit.fx - last.fx) / dt);
+      vy = 0.5 * vy + 0.5 * ((hit.fy - last.fy) / dt + 0.5 * cfg.G_FTS2 * dt);
+      pts.push(hit);
+      last = hit;
+    }
+  }
+  return pts;
+}
+
+/**
+ * Best ballistic track among seeds. cf = [{ t, c: [blob] }] by time. isSeed(blob), velOk(vx, vy).
+ * Returns { pts, fit, n, score } or null.
+ */
+function searchTrack(cf, isSeed, velOk, minPts, cfg) {
+  let best = null;
+  for (let i = 0; i < cf.length; i += 1) {
+    for (const a of cf[i].c) {
+      if (!isSeed(a)) continue;
+      for (let j = i + 1; j < cf.length && cf[j].t - a.t <= cfg.MAX_GAP_MS; j += 1) {
+        for (const b of cf[j].c) {
+          const dt = (b.t - a.t) / 1000;
+          if (dt <= 0) continue;
+          const vx = (b.fx - a.fx) / dt;
+          const vy = (b.fy - a.fy) / dt;
+          if (!velOk(vx, vy)) continue;
+          const pts = growTrack(cf, j, [a, b], vx, vy + 0.5 * cfg.G_FTS2 * dt, cfg);
+          let fit = fitTrack(pts, cfg);
+          while (pts.length > minPts && fit.rms > cfg.MAX_TRACK_RMS_FT) {
+            pts.pop();
+            fit = fitTrack(pts, cfg);
+          }
+          if (pts.length < minPts || fit.rms > cfg.MAX_TRACK_RMS_FT) continue;
+          const score = pts.length - 2 * fit.rms;
+          if (!best || score > best.score) best = { pts, fit, n: pts.length, score };
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/** Still blobs that persist for REST_FRAMES: a landed or dropped disc. Clusters in feet. */
+function findRestClusters(fr, cfg) {
+  const clusters = [];
+  for (const f of fr) {
+    const used = new Set();
+    for (const b of f.blobs) {
+      if (b.body || b.move > cfg.REST_MOVE_MAX) continue;
+      let c = null;
+      for (const k of clusters) {
+        if (!used.has(k) && Math.hypot(b.fx - k.fx, b.fy - k.fy) <= cfg.REST_RADIUS_FT) { c = k; break; }
+      }
+      if (c) {
+        c.fx = (c.fx * c.count + b.fx) / (c.count + 1);
+        c.fy = (c.fy * c.count + b.fy) / (c.count + 1);
+        c.u = (c.u * c.count + b.u) / (c.count + 1);
+        c.v = (c.v * c.count + b.v) / (c.count + 1);
+        c.count += 1;
+        c.lastT = f.t;
+        used.add(c);
+      } else {
+        const k = { fx: b.fx, fy: b.fy, u: b.u, v: b.v, count: 1, firstT: f.t, lastT: f.t };
+        clusters.push(k);
+        used.add(k);
+      }
+    }
+  }
+  return clusters;
+}
+
+/**
+ * Pure. Judge one throw from what the camera and microphone saw.
+ *   ctx = { thr, scene, frames, chains, now, final, endT }
+ *     thr     { t (release, perf ms), release: { xn, yn }|null, distanceFt }
+ *     scene   { box, dir, anchor, ftPerNormX, aspect }
+ *     frames  watcher frames; chains  chain events; now  current time (ms)
+ *     final   true when no more waiting is allowed (decide or ignore now)
+ *     endT    frames after this belong to the next throw
+ * Returns { state: 'wait' } or
+ *   { state: 'done', result: 'make'|'miss'|'ignored', missDirection, reason, conf, ev }
+ * ev holds every number behind the call, for the debug log.
+ */
+export function analyzeThrow(ctx, cfg = CONFIG.OUTCOME) {
+  const {
+    thr, scene, frames, chains, now, final, endT = Infinity,
+  } = ctx;
+  const ev = { factors: {} };
+  const ignore = (reason) => ({
+    state: 'done', result: 'ignored', missDirection: null, reason, conf: 0, ev,
+  });
+  const wait = () => ({ state: 'wait', ev });
+
+  const gate = checkScene(scene, cfg);
+  if (gate) { ev.gate = gate; return ignore(gate); }
+  const S = scene.ftPerNormX;
+  const A = scene.aspect;
+  const b = scene.box;
+  const dir = scene.dir;
+
+  // ---- Frames, in feet and cage units ------------------------------------------------------
+  const fr = [];
+  for (const f of frames) {
+    if (f.warm || f.t < thr.t - cfg.PRE_MS - 1500 || f.t > endT) continue;
+    fr.push({
+      t: f.t,
+      fgOut: f.fgOut,
+      blobs: f.blobs.map((q) => ({
+        t: f.t,
+        x: q.x,
+        y: q.y,
+        area: q.area,
+        move: q.move,
+        fx: q.x * S,
+        fy: (q.y * S) / A,
+        u: (dir * (q.x - b.xn)) / b.wn,
+        v: (q.y - b.yn) / b.hn,
+        body: inBox(q, f.player),
+        early: f.t - thr.t <= cfg.PLAYER_FREE_MS,
+      })),
+    });
+  }
+  const post = fr.filter((f) => f.t >= thr.t - cfg.PRE_MS);
+  ev.frames = post.length;
+  if (post.length < 3) {
+    if (final || now > thr.t + cfg.FLIGHT_WAIT_MS) return ignore('no video frames');
+    return wait();
+  }
+  const lastFrameT = post[post.length - 1].t;
+
+  // ---- Flight track ------------------------------------------------------------------------
+  const hand = thr.release ? { fx: thr.release.xn * S, fy: (thr.release.yn * S) / A } : null;
+  const cand = post.map((f) => ({
+    t: f.t,
+    c: f.blobs.filter((q) => q.move >= cfg.MIN_MOVE && (!q.body || q.early)),
+  }));
+  const seedOk = (q) => q.t >= thr.t - cfg.PRE_MS && q.t <= thr.t + cfg.START_WINDOW_MS
+    && (!hand || Math.hypot(q.fx - hand.fx, q.fy - hand.fy) <= cfg.START_RADIUS_FT);
+  const velOk = (vx, vy) => dir * vx >= cfg.VX_MIN_FTS && Math.hypot(vx, vy) <= cfg.V_MAX_FTS;
+  const trk = searchTrack(cand, seedOk, velOk, cfg.MIN_TRACK_PTS, cfg);
+  if (!trk) {
+    if (final || now > thr.t + cfg.FLIGHT_WAIT_MS) return ignore('no flight track');
+    return wait();
+  }
+  const pts = trk.pts;
+  const last = pts[pts.length - 1];
+  const fitq = clamp01((cfg.MAX_TRACK_RMS_FT - trk.fit.rms) / (cfg.MAX_TRACK_RMS_FT * 0.5));
+  // How often the disc was actually seen along its flight. If it was often missed in flight it
+  // could have been missed leaving the cage too, so "nothing left" proves little.
+  const spanFrames = post.filter((f) => f.t >= pts[0].t && f.t <= last.t).length;
+  const density = spanFrames > 0 ? trk.n / spanFrames : 0;
+  const fDensity = clamp01((density - cfg.DENSITY_MIN) / (cfg.DENSITY_FULL - cfg.DENSITY_MIN));
+  const fTrack = Math.min(clamp01((trk.n - 2) / 4), fitq);
+  ev.trk = {
+    n: trk.n, density, rms: trk.fit.rms, vxFts: dir * trk.fit.vx, t0: pts[0].t, tLast: last.t,
+    uFirst: pts[0].u, uLast: last.u, vLast: last.v,
+    pts: pts.map((p) => [p.x, p.y, p.t]),
+  };
+  ev.factors.track = fTrack;
+
+  // ---- Arrival at the cage, and pass-through -----------------------------------------------
+  let arr = null;
+  for (const p of pts) {
+    if (Math.abs(p.u) <= cfg.ARRIVE_U && Math.abs(p.v) <= cfg.ARRIVE_V) { arr = { t: p.t, u: p.u, v: p.v, inferred: false }; break; }
+  }
+  if (!arr && cfg.ALLOW_INFERRED_ARRIVAL && last.u >= -cfg.INFER_U && last.u < -cfg.ARRIVE_U) {
+    // Disc lost just short of the cage: project the fit to the cage's near edge.
+    const xFront = (b.xn - dir * 0.5 * b.wn) * S;
+    const s = (xFront - trk.fit.x0) / trk.fit.vx;
+    if (Number.isFinite(s) && s >= 0) {
+      const yFt = trk.fit.y0 + trk.fit.vy * s + 0.5 * cfg.G_FTS2 * s * s;
+      const v = ((yFt * A) / S - b.yn) / b.hn;
+      if (Math.abs(v) <= cfg.ARRIVE_V) arr = { t: trk.fit.t0 + s * 1000, u: -0.5, v, inferred: true };
+    }
+  }
+  ev.arr = arr;
+  const passPts = pts.filter((p) => p.u >= cfg.PASS_U).length;
+  ev.passPts = passPts;
+
+  const missResult = (direction, reason, conf, extra) => {
+    ev.factors.final = conf;
+    if (conf < cfg.CONF_MIN_MISS) return ignore(`low confidence (${reason})`);
+    return {
+      state: 'done', result: 'miss', missDirection: direction, reason, conf, ev, ...extra,
+    };
+  };
+  const dirOfU = (u) => (u < -0.5 ? 'short' : u > 0.5 ? 'long' : null);
+
+  // 1. The disc flew on past the cage.
+  if (passPts >= 2) {
+    const fPass = clamp01(passPts / 3);
+    ev.factors.pass = fPass;
+    return missResult('long', 'flew past', Math.min(fTrack, fPass));
+  }
+
+  // 2. A landed disc: a new still blob outside the cage, near where the disc was last seen.
+  const restClusters = findRestClusters(fr.filter((f) => f.t >= thr.t - 600), cfg)
+    .filter((k) => k.firstT > thr.t + 100 && k.count >= cfg.REST_FRAMES)
+    .filter((k) => Math.hypot(k.fx - last.fx, k.fy - last.fy) <= cfg.REST_NEAR_TRACK_FT);
+  const inCore = (k) => Math.abs(k.u) <= cfg.CORE_U && Math.abs(k.v) <= cfg.CORE_V;
+  const outside = (k) => Math.abs(k.u) > cfg.REST_OUT_U || Math.abs(k.v) > cfg.REST_OUT_V;
+  const restOut = restClusters.filter(outside).sort((p, q) => q.count - p.count)[0] || null;
+  const restBand = restClusters.some((k) => !inCore(k) && !outside(k));
+  ev.rest = restOut ? { u: restOut.u, v: restOut.v, count: restOut.count } : null;
+  ev.restBand = restBand;
+  if (restOut) {
+    const fRest = clamp01(restOut.count / (cfg.REST_FRAMES * 1.6));
+    ev.factors.rest = fRest;
+    return missResult(dirOfU(restOut.u), 'disc landed outside', Math.min(fTrack, fRest));
+  }
+
+  // 3. Contact with the cage.
+  if (!arr) {
+    if (!final && now - last.t < cfg.TRACK_LOST_MS && now < thr.t + cfg.HORIZON_MS) return wait();
+    return ignore('track lost before the basket');
+  }
+  const chainHits = chains
+    .filter((e) => e.t >= arr.t + cfg.AUDIO_MATCH_MS[0] && e.t <= arr.t + cfg.AUDIO_MATCH_MS[1])
+    .sort((p, q) => p.t - q.t);
+  const cm = chainHits[0] || null;
+  ev.chain = cm ? { dtMs: cm.t - arr.t, riseDb: cm.riseDb, bands: cm.bandsHit, durMs: cm.durMs } : null;
+  let contactT = cm ? cm.t : arr.t;
+  if (cm) { // a second clank soon after the first pushes the call back
+    let lastC = cm.t;
+    for (const e of chains.filter((x) => x.t > cm.t).sort((p, q) => p.t - q.t)) {
+      if (e.t - lastC <= cfg.SETTLE_MS) lastC = e.t;
+    }
+    contactT = lastC;
+  }
+  const decideAt = contactT + cfg.SETTLE_MS;
+  ev.contactT = contactT;
+  ev.decideAt = decideAt;
+
+  // 4. The disc left the cage again (bounce out, drop out): a moving track outside the cage zone.
+  const exitFrames = post.filter((f) => f.t > (cm ? cm.t : arr.t) + cfg.EXIT_GRACE_MS);
+  const exitBlobs = (f) => f.blobs.filter((q) => !q.body && q.move >= cfg.MIN_MOVE
+    && (Math.abs(q.u) > cfg.EXIT_U || Math.abs(q.v) > cfg.EXIT_V)
+    && Math.abs(q.u) <= cfg.EXIT_MAX_U && q.v >= cfg.EXIT_V_RANGE[0] && q.v <= cfg.EXIT_V_RANGE[1]);
+  const ecf = exitFrames.map((f) => ({ t: f.t, c: exitBlobs(f) }));
+  const exitTrk = searchTrack(ecf, () => true, (vx, vy) => Math.hypot(vx, vy) >= 3 && Math.hypot(vx, vy) <= cfg.V_MAX_FTS,
+    cfg.EXIT_MIN_PTS, cfg);
+  ev.exit = exitTrk ? { n: exitTrk.n, uEnd: exitTrk.pts[exitTrk.n - 1].u } : null;
+  if (exitTrk) {
+    const fExit = clamp01((exitTrk.n - 1) / 3);
+    ev.factors.exit = fExit;
+    return missResult(dirOfU(exitTrk.pts[exitTrk.n - 1].u), 'left the basket', Math.min(fTrack, fExit),
+      { arrived: true });
+  }
+  const weakFrames = ecf.filter((f) => f.t <= decideAt && f.c.length > 0).length;
+  ev.exitWeakFrames = weakFrames;
+
+  // Baseline: how often the exit zone shows moving blobs when nothing is thrown (wind, leaves).
+  const pre = fr.filter((f) => f.t >= thr.t - 1500 && f.t < thr.t - 300);
+  const baseFrac = pre.length >= 5 ? pre.filter((f) => exitBlobs(f).length > 0).length / pre.length : 0;
+  ev.baseFrac = baseFrac;
+
+  // 5. A make needs the chain sound, a quiet settle window, and healthy video the whole time.
+  if (!cm) {
+    if (!final && now < arr.t + cfg.AUDIO_MATCH_MS[1] + cfg.AUDIO_LATE_MS) return wait();
+    return ignore('contact without chain sound');
+  }
+  if (now < decideAt && !final) return wait();
+  if (lastFrameT < decideAt - 100) {
+    return final || now > decideAt + 1500 ? ignore('video stalled after contact') : wait();
+  }
+  if (final && now < decideAt) return ignore('cut short by the next throw');
+
+  const win = post.filter((f) => f.t >= contactT && f.t <= decideAt);
+  const fps = (win.length * 1000) / cfg.SETTLE_MS;
+  let maxGap = 0;
+  let prevT = contactT;
+  for (const f of win) { maxGap = Math.max(maxGap, f.t - prevT); prevT = f.t; }
+  maxGap = Math.max(maxGap, decideAt - prevT);
+  ev.cover = { fps, maxGapMs: maxGap };
+  if (fps < cfg.MIN_FPS || maxGap > cfg.MAX_GAP_SETTLE_MS) return ignore('video too sparse after contact');
+  if (baseFrac > cfg.EXIT_BASE_MAX) return ignore('busy scene around the basket');
+  if (weakFrames >= cfg.EXIT_WEAK_FRAMES) return ignore('ambiguous motion after contact');
+  if (restBand) return ignore('ambiguous resting disc near the cage');
+
+  ev.factors.audio = clamp01(((cm.riseDb ?? 0) - 8) / 12);
+  ev.factors.cover = clamp01((fps - cfg.MIN_FPS) / 5);
+  ev.factors.quiet = clamp01(1 - baseFrac / cfg.EXIT_BASE_MAX);
+  ev.factors.arrival = arr.inferred ? 0.75 : 1;
+  ev.factors.density = fDensity;
+  const conf = Math.min(fTrack, ev.factors.audio, ev.factors.cover, ev.factors.quiet, ev.factors.arrival, fDensity);
+  ev.factors.final = conf;
+  if (conf < cfg.CONF_MIN_MAKE) return ignore('low confidence (make)');
+  return {
+    state: 'done', result: 'make', missDirection: null, reason: 'in and stayed', conf, ev,
+  };
+}
+
+// ===========================================================================================
+// 5. JUDGE  (queue of throws waiting for their result)
+// ===========================================================================================
+
+/**
+ * createOutcomeJudge({ onVerdict })
+ *   release(thr)     a throw was detected; thr = { id, t, release, distanceFt, scene, ... }
+ *   addFrame(f, now) watcher frame     addChain(ev, now) chain event
+ *   step(now)        call a few times a second so timeouts fire
+ *   flush(now)       decide every waiting throw now (anything unclear becomes ignored)
+ *   onVerdict({ id, thr, result, missDirection, reason, conf, ev, decidedAt })
+ */
+export function createOutcomeJudge({ onVerdict } = {}) {
+  const C = CONFIG.OUTCOME;
+  let frames = [];
+  let chains = [];
+  let pending = [];
+  let log = [];
+
+  function finish(p, r, now) {
+    const v = {
+      id: p.thr.id,
+      thr: p.thr,
+      result: r.result,
+      missDirection: r.missDirection,
+      reason: r.reason,
+      conf: r.conf,
+      ev: r.ev,
+      decidedAt: now,
+    };
+    log.push({
+      id: v.id, t: p.thr.t, distanceFt: p.thr.distanceFt, result: v.result, dir: v.missDirection,
+      reason: v.reason, conf: v.conf, ev: v.ev, decidedAfterMs: now - p.thr.t,
+    });
+    if (log.length > C.LOG_N) log.shift();
+    if (onVerdict) onVerdict(v);
+  }
+
+  function run(now, forceAll) {
+    for (let i = 0; i < pending.length;) {
+      const p = pending[i];
+      const next = pending[i + 1];
+      const endT = next ? next.thr.t - 50 : Infinity;
+      const final = forceAll || now >= p.thr.t + C.HORIZON_MS || (next && now >= next.thr.t + 300);
+      const r = analyzeThrow({
+        thr: p.thr, scene: p.thr.scene, frames, chains, now, final: !!final, endT,
+      }, C);
+      p.last = r;
+      if (r.state === 'done') { pending.splice(i, 1); finish(p, r, now); } else i += 1;
+    }
+  }
+
+  return {
+    release(thr, now = thr.t) { pending.push({ thr, last: null }); run(now, false); },
+    addFrame(f, now = f.t) {
+      frames.push(f);
+      const cut = f.t - C.FRAME_BUF_MS;
+      while (frames.length && frames[0].t < cut) frames.shift();
+      if (pending.length) run(now, false);
+    },
+    addChain(ev, now = ev.t) {
+      chains.push(ev);
+      while (chains.length > 30) chains.shift();
+      if (pending.length) run(now, false);
+    },
+    step(now) { if (pending.length) run(now, false); },
+    flush(now) { if (pending.length) run(now, true); },
+    pendingCount: () => pending.length,
+    reset() { frames = []; chains = []; pending = []; log = []; },
+    getInfo: () => ({
+      pending: pending.map((p) => ({ id: p.thr.id, t: p.thr.t, last: p.last })),
+      log: log.map((l) => ({ ...l })),
+      frames: frames.length,
+    }),
+  };
+}
+
+// ===========================================================================================
+// 6. OUTCOME TRACKER  (wires watcher + judge to the app)
+// ===========================================================================================
+
+/**
+ * createOutcomeTracker({ video, onVerdict })
+ *   start() / stop() / reset()
+ *   setScene({ active, roundNumber, box, anchor, landmarks })  call every pose frame
+ *       active   true while a round is open and the screen is LIVE / FLASH
+ *       box      finder.getInfo().locked   anchor  round.getAnchor()   landmarks  pose landmarks|null
+ *   release(thr)  a throw was detected (from throws.js onThrow)
+ *   chain(ev)     a chain event (from the chain detector)
+ *   flush()       decide every waiting throw now
+ *   pendingCount(), getInfo()
+ */
+export function createOutcomeTracker({ video, onVerdict } = {}) {
+  const C = CONFIG.OUTCOME;
+  const judge = createOutcomeJudge({ onVerdict });
+  const watcher = createDiscWatcher({
+    video,
+    onFrame(f) { lastFrame = f; judge.addFrame(f, performance.now()); },
+  });
+  let scene = null;
+  let gate = 'idle';
+  let lastRound = null;
+  let lastFrame = null;
+  let timer = 0;
+  let seq = 0;
+
+  return {
+    start() {
+      watcher.start();
+      clearInterval(timer);
+      timer = setInterval(() => judge.step(performance.now()), 100);
+    },
+    stop() {
+      watcher.stop();
+      clearInterval(timer);
+      timer = 0;
+    },
+    reset() {
+      judge.reset();
+      watcher.reset();
+      scene = null;
+      gate = 'idle';
+      lastRound = null;
+      lastFrame = null;
+    },
+    setScene({ active, roundNumber, box, anchor, landmarks }) {
+      const aspect = video && video.videoHeight ? video.videoWidth / video.videoHeight : null;
+      scene = box && anchor && aspect
+        ? {
+          box,
+          dir: Math.sign(box.xn - anchor.xn) || 1,
+          anchor,
+          ftPerNormX: anchor.ftPerNormX,
+          aspect,
+        }
+        : null;
+      gate = !active ? 'idle' : checkScene(scene, C) || null;
+      if (roundNumber !== lastRound) { lastRound = roundNumber; watcher.reset(); }
+      if (active && !gate) {
+        watcher.setRoi(corridorRoi(scene, C));
+        const padX = C.PLAYER_PAD_FT / scene.ftPerNormX;
+        watcher.setPlayer(playerBox(landmarks, padX, padX * aspect));
+      } else {
+        watcher.setRoi(null);
+      }
+    },
+    release(thr) {
+      seq += 1;
+      const t = { ...thr, id: seq, scene, gate };
+      judge.release(t, performance.now());
+    },
+    chain(ev) { judge.addChain(ev, performance.now()); },
+    flush() { judge.flush(performance.now()); },
+    pendingCount: () => judge.pendingCount(),
+    getInfo: () => ({
+      gate,
+      scene,
+      watcher: watcher.getInfo(),
+      judge: judge.getInfo(),
+      frame: lastFrame,
     }),
   };
 }

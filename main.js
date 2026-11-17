@@ -1,5 +1,5 @@
 // main.js - wires setup, state machine, display, camera, pose tracking, basket finder, chain-sound
-// detector and (debug only) the simulator.
+// detector, disc tracking / make-miss (outcome.js) and (debug only) the simulator.
 
 import { CONFIG } from './config.js';
 import { SCREEN, createState, reduce, isFlash } from './state.js';
@@ -9,7 +9,9 @@ import * as cam from './camera.js';
 import { createPose } from './pose.js';
 import { createRoundTracker } from './round.js';
 import { createThrowDetector } from './throws.js';
-import { createBasketFinder, createChainDetector, playerSpan } from './outcome.js';
+import {
+  createBasketFinder, createChainDetector, createOutcomeTracker, playerSpan,
+} from './outcome.js';
 
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 
@@ -32,10 +34,11 @@ let bigFeed = false;
 let tapArmed = false;
 let lastMotionAt = 0;
 
-// Phase 4: throw detection. The outcome (make/miss) is not known until the disc/basket pipeline
-// exists, so every detected release is scored with a TEMPORARY outcome picked here. In ?debug=1
-// the "Outcome" button cycles MISS / MAKE / ALT; otherwise every detected throw is a MISS.
-const OUTCOMES = ['miss', 'make', 'alternate'];
+// Phase 4/5b: throw detection. By default (AUTO) the result comes from the disc tracker and the
+// chain sound (outcome.js): a verdict arrives about 1-2.5 s after the release, and anything it is
+// not sure about is IGNORED. In ?debug=1 the "Outcome" button can force MISS / MAKE / ALT instead,
+// which scores every detected release at once like Phase 4 did (for testing the screens).
+const OUTCOMES = ['auto', 'miss', 'make', 'alternate'];
 let outcomeIdx = 0;
 let altFlip = false;
 
@@ -56,17 +59,70 @@ const throwTools = {
 
 const detector = createThrowDetector({
   onThrow(t) {
-    dispatch({
-      type: 'throw',
-      result: pickOutcome(),
+    if (OUTCOMES[outcomeIdx] !== 'auto') { // debug override: score right away
+      dispatch({
+        type: 'throw',
+        result: pickOutcome(),
+        distanceFt: t.distanceFt,
+        speedMph: null,
+        releaseAngleDeg: null,
+        missDirection: null,
+        now: Date.now(),
+      });
+      return;
+    }
+    outcome.release({
+      t: t.t,
+      release: t.release || null,
       distanceFt: t.distanceFt,
-      speedMph: null, // Phase 5+: from flight.js
-      releaseAngleDeg: null,
-      missDirection: null,
-      now: Date.now(),
+      roundNumber: state.roundNumber,
+      date: Date.now(),
     });
   },
 });
+
+// Verdicts arrive late (flight + about 1 s of settling), so a round end can be requested while a
+// throw is still being judged. The round end waits for it (state.js ignores throws once the round
+// is closed), then waits a moment more so a make / miss flash can be seen.
+let roundEndHeld = false;
+let roundEndTimer = 0;
+let holdGuard = 0;
+
+function clearRoundEndHold() {
+  roundEndHeld = false;
+  clearTimeout(roundEndTimer);
+  clearTimeout(holdGuard);
+}
+
+function fireRoundEnd(delayMs) {
+  clearTimeout(roundEndTimer);
+  roundEndTimer = setTimeout(() => { clearRoundEndHold(); dispatch({ type: 'roundEnd' }); }, delayMs);
+}
+
+function requestRoundEnd() {
+  if (!outcome.pendingCount()) { dispatch({ type: 'roundEnd' }); return; }
+  if (roundEndHeld) return;
+  roundEndHeld = true;
+  // Never wait forever: undecided throws become "ignored".
+  holdGuard = setTimeout(() => { outcome.flush(); }, CONFIG.OUTCOME.ROUND_END_HOLD_MAX_MS);
+}
+
+function onVerdict(v) {
+  if (DEBUG) console.info('verdict', v.result, v.missDirection, v.reason, v.conf.toFixed(2), v.ev);
+  dispatch({
+    type: 'throw',
+    result: v.result, // 'make' | 'miss' | 'ignored'
+    distanceFt: v.thr.distanceFt,
+    speedMph: null, // Phase 6: from flight.js
+    releaseAngleDeg: null,
+    missDirection: v.result === 'miss' ? v.missDirection : null,
+    now: v.thr.date,
+  });
+  if (roundEndHeld && !outcome.pendingCount()) {
+    clearTimeout(holdGuard);
+    fireRoundEnd(v.result === 'ignored' ? 0 : CONFIG.OUTCOME.POST_FLASH_HOLD_MS);
+  }
+}
 
 // Phase 5a: the basket is located automatically (outcome.js). When it is found, its x replaces the
 // temporary Phase 3 value and the FINDING BASKET screen clears. A manual tap (debug) or a fixed
@@ -78,11 +134,12 @@ const finder = createBasketFinder({
   },
 });
 
-// Chain-rattle events. Phase 5b will pair these with the disc reaching the basket to call a make.
+// Chain-rattle events. outcome.js pairs these with the disc reaching the basket to call a make.
 // The audio flag now means "mic open, AudioContext running and not silent".
 const chains = createChainDetector({
   onChain(ev) {
     if (DEBUG) console.info('chain', ev);
+    outcome.chain(ev); // only counts when it matches a disc that reached the basket
   },
   onStatus(ok) {
     dispatch({ type: 'flags', patch: { audio: ok } });
@@ -156,13 +213,21 @@ function onPoseFrame(frame) {
   const now = performance.now();
   const out = tracker.update(frame, now, state);
   syncFlags({ player: out.flags.player, stable: out.flags.stable });
-  if (out.roundEnd) dispatch({ type: 'roundEnd' });
+  if (out.roundEnd) requestRoundEnd();
 
   // Throw detection runs only while a round is open and LIVE / FLASH, so a swing made while
   // NOT_READY or on the blue screen is never counted.
   const snap = tracker.snapshot();
+  const active = state.roundOpen && (state.screen === SCREEN.LIVE || isFlash(state.screen));
+  outcome.setScene({
+    active,
+    roundNumber: state.roundNumber,
+    box: finder.getInfo().locked,
+    anchor: tracker.getAnchor(),
+    landmarks: frame.landmarks,
+  });
   detector.update(frame, now, {
-    active: state.roundOpen && (state.screen === SCREEN.LIVE || isFlash(state.screen)),
+    active,
     roundNumber: state.roundNumber,
     basketX: tracker.getBasketX(),
     anchor: tracker.getAnchor(),
@@ -237,6 +302,7 @@ function exitFullscreen() {
 // ---- Session ----------------------------------------------------------------
 
 async function releaseDevices() {
+  outcome.stop();
   finder.stop();
   chains.close();
   cam.stopCamera(display.video);
@@ -250,6 +316,8 @@ async function startSession({ heightIn } = {}) {
   setup.setBusy(true);
   tracker.reset();
   detector.reset();
+  outcome.reset();
+  clearRoundEndHold();
   tracker.setHeightIn(heightIn || CONFIG.HEIGHT_DEFAULT_IN);
   tracker.setBasketX(CONFIG.BASKET_X_NORM); // forget the last session's basket: the phone may have moved
   lastFrame = null;
@@ -265,6 +333,7 @@ async function startSession({ heightIn } = {}) {
     if (stopped()) return releaseDevices();
     dispatch({ type: 'flags', patch: { camera: true } });
     pose.start(); // loads the model in the background; the feed read-out says MODEL LOADING
+    outcome.start(); // disc watcher: idles until a round is live and the basket box is known
     if (CONFIG.BASKET_X_NORM == null) finder.start(display.video); // else the fixed x is used
   } catch (err) {
     console.warn('camera failed:', err);
@@ -285,6 +354,8 @@ async function stopSession() {
   pose.stop();
   tracker.reset();
   detector.reset();
+  outcome.reset();
+  clearRoundEndHold();
   resetFeedMode();
   dispatch({ type: 'stop' });
   exitFullscreen();
@@ -293,6 +364,7 @@ async function stopSession() {
 }
 
 const display = createDisplay(screenRoot, { onStop: stopSession });
+const outcome = createOutcomeTracker({ video: display.video, onVerdict });
 const setup = renderSetup(setupRoot, { onStart: startSession });
 const pose = createPose({
   video: display.video,
@@ -316,6 +388,6 @@ if (DEBUG) {
   debugRoot.classList.toggle('on-setup', state.screen === SCREEN.SETUP); // the app launches on SETUP
   const { createOutcomeDebug } = await import('./outcome-debug.js');
   createOutcomeDebug(debugRoot, {
-    video: display.video, finder, chains, getStreams: cam.getStreams,
+    video: display.video, finder, chains, getStreams: cam.getStreams, outcome,
   });
 }

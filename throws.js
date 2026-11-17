@@ -1,7 +1,8 @@
 // throws.js - detects a putt release from wrist motion. Pure logic (no DOM, no timers).
 //
 // Call update(frame, now, ctx) once per pose frame. When a release is accepted it calls
-// onThrow({ t, distanceFt, arm, peakSpeed, gain, ext, number }). It never tracks the disc and
+// onThrow({ t, distanceFt, arm, peakSpeed, gain, ext, number, release }) where release is the
+// wrist position { xn, yn } (raw-frame fractions) at peak speed. It never tracks the disc and
 // never decides make/miss.
 //
 // Signal (per wrist, in BODY HEIGHTS so the player's distance from the phone does not matter):
@@ -148,6 +149,7 @@ export function createThrowDetector({ onThrow } = {}) {
     if (onThrow) {
       onThrow({
         t: sw.peakT, distanceFt: dist, arm: name, peakSpeed: sw.peakV, gain, ext: sw.maxExt, number: detected,
+        release: sw.peakPt,
       });
     }
   }
@@ -200,7 +202,7 @@ export function createThrowDetector({ onThrow } = {}) {
       if (vf >= C.SPEED_START) {
         arm.swing = {
           t0: vel.ref.t, lastT: now, peakV: vf, peakT: now, maxExt: s.ext,
-          peakX: s.X, peakY: s.Y, gate: { ...body.gate, rise: s.rise },
+          peakX: s.X, peakY: s.Y, peakPt: { xn: p.x, yn: p.y }, gate: { ...body.gate, rise: s.rise },
         };
       }
       return;
@@ -214,6 +216,7 @@ export function createThrowDetector({ onThrow } = {}) {
       sw.peakT = now;
       sw.peakX = s.X;
       sw.peakY = s.Y;
+      sw.peakPt = { xn: p.x, yn: p.y };
       sw.gate = { ...body.gate, rise: s.rise };
     }
     if (vf < C.SPEED_END || now - sw.t0 > C.SWING_MAX_MS) finish(name, arm);
