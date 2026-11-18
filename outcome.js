@@ -1154,6 +1154,27 @@ export function createOutcomeJudge({ onVerdict } = {}) {
   let chains = [];
   let pending = [];
   let log = [];
+  let replays = [];
+
+  const r4 = (v) => (typeof v === 'number' ? Math.round(v * 10000) / 10000 : v);
+
+  // Everything analyzeThrow saw for this throw, so it can be re-run offline with other thresholds.
+  function makeReplay(p, v) {
+    const t = p.thr.t;
+    const { scene, snapshot, ...thr } = p.thr;
+    return {
+      id: v.id,
+      thr,
+      scene,
+      snapshot: snapshot || null,
+      verdict: { result: v.result, dir: v.missDirection, reason: v.reason, conf: v.conf, decidedAt: v.decidedAt },
+      chains: chains.filter((e) => e.t >= t - 1000 && e.t <= t + C.HORIZON_MS + 1000),
+      frames: frames.filter((f) => f.t >= t - 2000 && f.t <= t + C.HORIZON_MS).map((f) => ({
+        t: r4(f.t), fgOut: r4(f.fgOut), warm: f.warm, dropped: f.dropped, player: f.player,
+        blobs: f.blobs.map((b) => ({ x: r4(b.x), y: r4(b.y), w: r4(b.w), h: r4(b.h), area: b.area, move: r4(b.move) })),
+      })),
+    };
+  }
 
   function finish(p, r, now) {
     const v = {
@@ -1171,6 +1192,8 @@ export function createOutcomeJudge({ onVerdict } = {}) {
       reason: v.reason, conf: v.conf, ev: v.ev, decidedAfterMs: now - p.thr.t,
     });
     if (log.length > C.LOG_N) log.shift();
+    replays.push(makeReplay(p, v));
+    if (replays.length > C.REPLAY_N) replays.shift();
     if (onVerdict) onVerdict(v);
   }
 
@@ -1204,7 +1227,8 @@ export function createOutcomeJudge({ onVerdict } = {}) {
     step(now) { if (pending.length) run(now, false); },
     flush(now) { if (pending.length) run(now, true); },
     pendingCount: () => pending.length,
-    reset() { frames = []; chains = []; pending = []; log = []; },
+    reset() { frames = []; chains = []; pending = []; log = []; replays = []; },
+    getReplays: () => replays,
     getInfo: () => ({
       pending: pending.map((p) => ({ id: p.thr.id, t: p.thr.t, last: p.last })),
       log: log.map((l) => ({ ...l })),
@@ -1241,8 +1265,23 @@ export function createOutcomeTracker({ video, onVerdict } = {}) {
   let lastFrame = null;
   let timer = 0;
   let seq = 0;
+  let snapCanvas = null;
+
+  // One small JPEG of the whole frame at the release, to check the basket box and the scene.
+  function grabSnapshot() {
+    try {
+      if (!video || !video.videoWidth) return null;
+      if (!snapCanvas) snapCanvas = document.createElement('canvas');
+      const w = Math.min(C.SNAPSHOT_W, video.videoWidth);
+      snapCanvas.width = w;
+      snapCanvas.height = Math.round((w * video.videoHeight) / video.videoWidth);
+      snapCanvas.getContext('2d').drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);
+      return snapCanvas.toDataURL('image/jpeg', 0.6);
+    } catch (_) { return null; }
+  }
 
   return {
+    getReplays: () => judge.getReplays(),
     start() {
       watcher.start();
       clearInterval(timer);
@@ -1284,7 +1323,9 @@ export function createOutcomeTracker({ video, onVerdict } = {}) {
     },
     release(thr) {
       seq += 1;
-      const t = { ...thr, id: seq, scene, gate };
+      const t = {
+        ...thr, id: seq, scene, gate, snapshot: C.SNAPSHOT_W ? grabSnapshot() : null,
+      };
       judge.release(t, performance.now());
     },
     chain(ev) { judge.addChain(ev, performance.now()); },

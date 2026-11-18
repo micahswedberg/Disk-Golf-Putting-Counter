@@ -265,6 +265,8 @@ export const CONFIG = {
     ROUND_END_HOLD_MAX_MS: 4000, // longest a round end waits for a throw still being judged
     POST_FLASH_HOLD_MS: 1000, // after a make/miss verdict the round end waits this long so it can be seen
     LOG_N: 12, // verdicts kept for the debug read-out
+    REPLAY_N: 6, // throws whose full frame data is kept for the debug "Save replay" file
+    SNAPSHOT_W: 960, // width of the JPEG grabbed at each release for that file (0 = off)
   },
 
   // ?debug=1 clip recorder

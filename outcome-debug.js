@@ -51,6 +51,16 @@ export function createOutcomeDebug(root, {
   };
   button('Re-find basket', () => finder.reset());
   const recBtn = button('Record clip', () => (rec ? stopRecording() : startRecording()));
+  const replayBtn = button('Save replay', () => {
+    const rp = outcome.getReplays();
+    if (!rp.length) { replayBtn.textContent = 'No throws yet'; setTimeout(() => { replayBtn.textContent = 'Save replay'; }, 1500); return; }
+    const blob = new Blob([JSON.stringify({ saved: new Date().toISOString(), config: CONFIG.OUTCOME, replays: rp })], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `putt-replay-${Date.now()}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
   const logBtn = button('Copy verdict log', async () => {
     const log = outcome.getInfo().judge.log;
     const text = log.map((l) => JSON.stringify(l)).join('\n') || 'no verdicts yet';
