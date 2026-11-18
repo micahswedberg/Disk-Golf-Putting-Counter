@@ -200,9 +200,10 @@ export function createBasketFinder({ onFound } = {}) {
     stop() { clearInterval(timer); timer = 0; video = null; },
     /** Forget the basket and search again. */
     reset() { locked = null; hist = []; cand = null; stableCount = 0; if (video) begin(); },
-    /** Manual override (debug tap): accept this x and stop searching. */
-    lock(xn) {
-      accept({ xn, yn: null, wn: null, hn: null, manual: true });
+    /** Manual override (debug tap): accept this x (and y = cage centre) and stop searching. The
+     *  box size is filled in later from the scale (createOutcomeTracker.setScene). */
+    lock(xn, yn = null) {
+      accept({ xn, yn, wn: null, hn: null, manual: true });
     },
     /** Player's x span in raw-frame coordinates, so the player is not mistaken for the basket. */
     setExclude(span) { exclude = span; excludeAt = performance.now(); },
@@ -1302,6 +1303,10 @@ export function createOutcomeTracker({ video, onVerdict } = {}) {
     },
     setScene({ active, roundNumber, box, anchor, landmarks }) {
       const aspect = video && video.videoHeight ? video.videoWidth / video.videoHeight : null;
+      if (box && box.manual && box.yn != null && anchor && aspect) {
+        // Hand-set basket: assume a standard cage size at the thrower's scale.
+        box = { ...box, wn: C.MANUAL_CAGE_FT / anchor.ftPerNormX, hn: (C.MANUAL_CAGE_FT * aspect) / anchor.ftPerNormX };
+      }
       scene = box && anchor && aspect
         ? {
           box,

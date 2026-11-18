@@ -253,8 +253,8 @@ function applyFeedMode() {
   display.setFeedLarge(bigFeed || tapArmed, tapArmed);
 }
 
-function onBasketTap(x) {
-  finder.lock(x); // manual override: stops the search and sets the basket x
+function onBasketTap(x, y) {
+  finder.lock(x, y); // manual override: stops the search; x for the round, y for the outcome box
   tapArmed = false;
   display.onFeedTap(null);
   applyFeedMode();

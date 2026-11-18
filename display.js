@@ -221,7 +221,11 @@ export function createDisplay(root, { onStop }) {
     if (!tapFn) return;
     const r = feed.getBoundingClientRect();
     // The feed is shown mirrored; tap x is converted back to raw camera-frame x.
-    tapFn(Math.min(1, Math.max(0, 1 - (e.clientX - r.left) / r.width)));
+    // y is not mirrored. The outcome tracker uses it as the cage centre for a hand-set basket.
+    tapFn(
+      Math.min(1, Math.max(0, 1 - (e.clientX - r.left) / r.width)),
+      Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+    );
   });
 
   function drawFeed({ landmarks, basketX, anchorX, feetX, debug }) {

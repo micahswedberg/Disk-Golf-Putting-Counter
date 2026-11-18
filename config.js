@@ -208,6 +208,7 @@ export const CONFIG = {
     ROI_BEYOND_W: 3.0, // cage widths beyond the cage centre
     ROI_BEHIND: 0.03, // frame widths behind the thrower
     // Gates on the scene (a failure ignores every throw)
+    MANUAL_CAGE_FT: 2.0, // cage size assumed for a hand-tapped basket (tap the cage centre)
     BOX_FT: [1.0, 4.0], // cage width and height must be in this range at the thrower's scale
     ANCHOR_FT: [6, 50], // thrower to basket distance must be in this range
     // Flight tracking
