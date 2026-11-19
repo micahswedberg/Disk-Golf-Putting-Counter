@@ -76,6 +76,11 @@ const TEMPLATE = `
     <figure class="card"><figcaption>Top view</figcaption>${TOP_DOWN_SVG}</figure>
     <figure class="card"><figcaption>Side view</figcaption>${SIDE_SVG}</figure>
   </div>
+  <ol class="setup-steps">
+    <li>Press <b>Start</b>. The camera view fills the screen.</li>
+    <li><b>Tap the middle of the basket.</b> Check the box runs from its top band to its tray, then press OK.</li>
+    <li>Walk into frame and stand still. The screen shows READY when it is.</li>
+  </ol>
   <div class="setup-foot">
     <label for="heightIn">Your height (inches)</label>
     <input id="heightIn" type="number" inputmode="decimal" min="${CONFIG.HEIGHT_MIN_IN}" max="${CONFIG.HEIGHT_MAX_IN}" step="0.5">

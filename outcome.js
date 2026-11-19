@@ -113,6 +113,76 @@ export function findBasketCandidate(luma, w, h, bandY0, fullH, exclude, cfg = CO
 }
 
 /**
+ * Pure. Refine a tapped spot into the cage box: the top band and the tray are horizontal edges that
+ * stand out from the same rows to the left and right, the chains between them are vertical edges.
+ *   luma, w, h   grey crop;  tap { x, y } in crop pixels (the user's tap)
+ *   frame        { w, h } size of the WHOLE frame in the same pixel scale (default: the crop is
+ *                REFINE_CROP around the tap)
+ * Returns { x0, y0, x1, y1, score, band, vEx } in crop pixels, or null. The caller decides with
+ * band >= REFINE_BAND_MIN and score >= REFINE_MIN_SCORE whether it is trustworthy.
+ */
+export function refineBasketBox(luma, w, h, tap, cfg = CONFIG.BASKET, frame = null) {
+  const edgeV = new Uint8Array(w * h);
+  const edgeH = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y += 1) {
+    for (let x = 1; x < w - 1; x += 1) {
+      const i = y * w + x;
+      const gx = Math.abs(luma[i + 1] - luma[i - 1]);
+      const gy = Math.abs(luma[i + w] - luma[i - w]);
+      if (gx >= cfg.REFINE_EDGE_MIN && gx >= cfg.VERT_RATIO * gy) edgeV[i] = 1;
+      if (gy >= cfg.REFINE_EDGE_MIN && gy >= cfg.VERT_RATIO * gx) edgeH[i] = 1;
+    }
+  }
+  const W1 = w + 1;
+  const integ = (e) => {
+    const ii = new Int32Array(W1 * (h + 1));
+    for (let y = 0; y < h; y += 1) {
+      let run = 0;
+      for (let x = 0; x < w; x += 1) { run += e[y * w + x]; ii[(y + 1) * W1 + x + 1] = ii[y * W1 + x + 1] + run; }
+    }
+    return ii;
+  };
+  const iiV = integ(edgeV);
+  const iiH = integ(edgeH);
+  const dens = (ii, x0, y0, x1, y1) => {
+    const a = Math.max(0, x0); const b = Math.min(w, x1);
+    const c = Math.max(0, y0); const d = Math.min(h, y1);
+    if (b <= a || d <= c) return 0;
+    return (ii[d * W1 + b] - ii[c * W1 + b] - ii[d * W1 + a] + ii[c * W1 + a]) / ((x1 - x0) * (y1 - y0));
+  };
+  // The crop covers cfg.REFINE_CROP of the frame, so the search radii are scaled to crop pixels.
+  const fw = frame ? frame.w : w / (2 * cfg.REFINE_CROP[0]);
+  const frameH = frame ? frame.h : h / (2 * cfg.REFINE_CROP[1]);
+  const rx = cfg.REFINE_RX * fw;
+  const ry = cfg.REFINE_RY * frameH;
+  let best = null;
+  for (const frac of cfg.REFINE_H_FRACS) {
+    for (const asp of cfg.REFINE_ASPECTS) {
+      const bh = Math.round(frac * frameH);
+      const bw = Math.round(bh * asp);
+      const t = Math.max(2, Math.round(cfg.REFINE_BAND_FRAC * bh));
+      for (let cx = tap.x - rx; cx <= tap.x + rx; cx += 2) {
+        for (let cy = tap.y - ry; cy <= tap.y + ry; cy += 2) {
+          const x0 = Math.round(cx - bw / 2); const y0 = Math.round(cy - bh / 2);
+          const x1 = x0 + bw; const y1 = y0 + bh;
+          const vin = dens(iiV, x0, y0, x1, y1);
+          const vsur = Math.max(dens(iiV, x0 - bw, y0, x0, y1), dens(iiV, x1, y0, x1 + bw, y1));
+          const top = dens(iiH, x0, y0 - t, x1, y0 + t);
+          const bot = dens(iiH, x0, y1 - t, x1, y1 + t);
+          const topS = Math.max(dens(iiH, x0 - bw, y0 - t, x0, y0 + t), dens(iiH, x1, y0 - t, x1 + bw, y0 + t));
+          const botS = Math.max(dens(iiH, x0 - bw, y1 - t, x0, y1 + t), dens(iiH, x1, y1 - t, x1 + bw, y1 + t));
+          const band = Math.min(top - topS, bot - botS);
+          const dist = Math.hypot((cx - tap.x) / w, (cy - tap.y) / h);
+          const score = cfg.REFINE_W_BAND * band + cfg.REFINE_W_V * (vin - vsur) - cfg.REFINE_W_DIST * dist;
+          if (!best || score > best.score) best = { x0, y0, x1, y1, score, band, vEx: vin - vsur };
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * createBasketFinder({ onFound })
  *   onFound(xn) fires once when a candidate has stayed put long enough (or after lock()).
  * Methods: start(video), stop(), reset(), lock(xn), setExclude({x0,x1}|null), getInfo().
@@ -196,14 +266,68 @@ export function createBasketFinder({ onFound } = {}) {
   }
 
   return {
-    start(v) { video = v; locked = null; hist = []; cand = null; stableCount = 0; begin(); },
+    /** Attach the video. The basket is normally marked by the user (mark / commit); with
+     *  BASKET.AUTO_FIND (or after reset()) it also searches the whole frame by itself. */
+    start(v, { auto = C.AUTO_FIND } = {}) {
+      video = v; locked = null; hist = []; cand = null; stableCount = 0;
+      if (auto) begin();
+    },
+    /**
+     * The user tapped the basket (raw-frame fractions). Look around the tap for the top band and the
+     * tray. Returns { xn, yn, wn, hn, refined, score, band }; refined = false means only the tap is
+     * known (the box size is then taken from the scale later). Does not lock: call commit().
+     */
+    mark(xn, yn) {
+      const plain = () => ({
+        xn, yn, wn: null, hn: null, manual: true, refined: false, score: null, band: null,
+      });
+      if (!video || video.readyState < 2 || !video.videoWidth) return plain();
+      const vw = video.videoWidth; const vh = video.videoHeight;
+      const [cwF, chF] = C.REFINE_CROP;
+      const fx0 = Math.max(0, xn - cwF); const fx1 = Math.min(1, xn + cwF);
+      const fy0 = Math.max(0, yn - chF); const fy1 = Math.min(1, yn + chF);
+      const scale = Math.min(1, C.REFINE_W / vw);
+      const w = Math.round((fx1 - fx0) * vw * scale);
+      const h = Math.round((fy1 - fy0) * vh * scale);
+      if (w < 40 || h < 40) return plain();
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      g.drawImage(video, fx0 * vw, fy0 * vh, (fx1 - fx0) * vw, (fy1 - fy0) * vh, 0, 0, w, h);
+      const px = g.getImageData(0, 0, w, h).data;
+      const luma = new Uint8Array(w * h);
+      for (let i = 0, j = 0; i < luma.length; i += 1, j += 4) luma[i] = (77 * px[j] + 150 * px[j + 1] + 29 * px[j + 2]) >> 8;
+      const best = refineBasketBox(
+        luma, w, h,
+        { x: ((xn - fx0) / (fx1 - fx0)) * w, y: ((yn - fy0) / (fy1 - fy0)) * h },
+        C, { w: w / (fx1 - fx0), h: h / (fy1 - fy0) },
+      );
+      if (!best || best.band < C.REFINE_BAND_MIN || best.score < C.REFINE_MIN_SCORE) return plain();
+      // The tap was meant for the middle of the basket: a box that does not contain it is something else.
+      const tx = ((xn - fx0) / (fx1 - fx0)) * w; const ty = ((yn - fy0) / (fy1 - fy0)) * h;
+      if (tx < best.x0 || tx > best.x1 || ty < best.y0 || ty > best.y1) return plain();
+      const bx = (px0) => fx0 + (px0 / w) * (fx1 - fx0);
+      const by = (py0) => fy0 + (py0 / h) * (fy1 - fy0);
+      return {
+        xn: bx((best.x0 + best.x1) / 2),
+        yn: by((best.y0 + best.y1) / 2),
+        wn: ((best.x1 - best.x0) / w) * (fx1 - fx0),
+        hn: ((best.y1 - best.y0) / h) * (fy1 - fy0),
+        manual: true,
+        refined: true,
+        score: best.score,
+        band: best.band,
+      };
+    },
+    /** Lock the box the user confirmed. */
+    commit(box) { accept({ ...box, manual: true }); },
     stop() { clearInterval(timer); timer = 0; video = null; },
     /** Forget the basket and search again. */
     reset() { locked = null; hist = []; cand = null; stableCount = 0; if (video) begin(); },
+    /** Forget the basket without searching (the user will mark it again). */
+    clear() { locked = null; clearInterval(timer); timer = 0; },
     /** Manual override (debug tap): accept this x (and y = cage centre) and stop searching. The
      *  box size is filled in later from the scale (createOutcomeTracker.setScene). */
     lock(xn, yn = null) {
-      accept({ xn, yn, wn: null, hn: null, manual: true });
+      accept({ xn, yn, wn: null, hn: null, manual: true, refined: false });
     },
     /** Player's x span in raw-frame coordinates, so the player is not mistaken for the basket. */
     setExclude(span) { exclude = span; excludeAt = performance.now(); },
@@ -1303,7 +1427,7 @@ export function createOutcomeTracker({ video, onVerdict } = {}) {
     },
     setScene({ active, roundNumber, box, anchor, landmarks }) {
       const aspect = video && video.videoHeight ? video.videoWidth / video.videoHeight : null;
-      if (box && box.manual && box.yn != null && anchor && aspect) {
+      if (box && box.manual && !box.refined && box.yn != null && anchor && aspect) {
         // Hand-set basket: assume a standard cage size at the thrower's scale.
         box = { ...box, wn: C.MANUAL_CAGE_FT / anchor.ftPerNormX, hn: (C.MANUAL_CAGE_FT * aspect) / anchor.ftPerNormX };
       }

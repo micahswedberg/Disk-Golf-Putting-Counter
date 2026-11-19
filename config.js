@@ -156,6 +156,24 @@ export const CONFIG = {
     STABLE_TOL: 0.012, // ...within this x distance (fraction of frame width)
     EXCLUDE_PAD: 0.03, // margin added around the player's x span (the player is never the basket)
     EXCLUDE_TTL_MS: 1000, // a player span older than this is ignored
+    AUTO_FIND: false, // true = also search the whole frame by itself (Phase 5a); normally the user taps the basket
+    // Refinement around the user's tap: find the top band and the tray, so the box is the cage
+    // the disc must enter and stay in. Tuned on a real 960 px frame (a basket ~50 px wide).
+    REFINE_W: 960, // analysis width of the crop around the tap
+    REFINE_CROP: [0.15, 0.20], // crop half-size around the tap (fraction of frame width, height)
+    REFINE_RX: 0.03, // how far from the tap the box centre may be (fraction of frame width)
+    REFINE_RY: 0.05, // ...and of frame height
+    REFINE_H_FRACS: [0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.11], // cage heights tried (fraction of frame height)
+    REFINE_ASPECTS: [0.8, 0.95, 1.1], // cage width / height tried
+    REFINE_EDGE_MIN: 14, // brightness step (0-255) that counts as an edge
+    REFINE_BAND_FRAC: 0.08, // thickness of the band / tray strips, as a share of the cage height
+    REFINE_W_BAND: 1.0, // weight of the top-band + tray evidence (horizontal edges beating their surroundings)
+    REFINE_W_V: 1.0, // weight of the chain evidence (vertical edges beating their surroundings)
+    REFINE_W_DIST: 1.0, // pull toward the tap
+    REFINE_BAND_MIN: 0.06, // both band and tray must stand out by this much, else the tap is used as is
+    REFINE_MIN_SCORE: 0.12,
+    TAP_BOX_H: 0.08, // box height shown for a plain tap (fraction of frame height); its real size comes from the scale
+    TAP_BOX_ASPECT: 0.95, // cage width / height for a box made from top and bottom taps
   },
 
   // Chain-rattle detector (Web Audio). Levels are dB relative to full scale, per FFT bin.
@@ -208,7 +226,7 @@ export const CONFIG = {
     ROI_BEYOND_W: 3.0, // cage widths beyond the cage centre
     ROI_BEHIND: 0.03, // frame widths behind the thrower
     // Gates on the scene (a failure ignores every throw)
-    MANUAL_CAGE_FT: 2.0, // cage size assumed for a hand-tapped basket (tap the cage centre)
+    MANUAL_CAGE_FT: 2.0, // cage size assumed when the tap could not be refined (size from the thrower's scale)
     BOX_FT: [1.0, 4.0], // cage width and height must be in this range at the thrower's scale
     ANCHOR_FT: [6, 50], // thrower to basket distance must be in this range
     // Flight tracking

@@ -2,7 +2,7 @@
 // Setup screen lives in setup.js.
 
 import { CONFIG } from './config.js';
-import { SCREEN, bucketStats, makePct } from './state.js';
+import { SCREEN, REASON, bucketStats, makePct } from './state.js';
 
 // ---- Contrast helper ------------------------------------------------------
 
@@ -104,14 +104,22 @@ const TEMPLATE = `
     <canvas class="feed-ov"></canvas>
     <div class="feed-readout"></div>
   </div>
+  <div class="mark-prompt"></div>
+  <div class="mark-btns">
+    <button class="mark-fix" type="button">Fix top / bottom</button>
+    <button class="mark-ok" type="button">OK</button>
+  </div>
   <button class="stop" type="button">Stop</button>
+  <button class="remark" type="button">Re-mark basket</button>
 `;
 
 /**
  * Build the session screen inside `root`.
  * Returns { render(state), video } - video is the mirrored corner feed element.
  */
-export function createDisplay(root, { onStop }) {
+export function createDisplay(root, {
+  onStop, onMarkTap, onMarkOk, onMarkFix, onRemark,
+} = {}) {
   root.innerHTML = TEMPLATE;
   const q = (sel) => root.querySelector(sel);
   const el = {
@@ -149,6 +157,25 @@ export function createDisplay(root, { onStop }) {
   }
 
   q('.stop').addEventListener('click', onStop);
+  q('.mark-ok').addEventListener('click', () => onMarkOk && onMarkOk());
+  q('.mark-fix').addEventListener('click', () => onMarkFix && onMarkFix());
+  q('.remark').addEventListener('click', () => onRemark && onRemark());
+  const markPrompt = q('.mark-prompt');
+  const markOk = q('.mark-ok');
+  const markFix = q('.mark-fix');
+  let markView = { phase: null };
+
+  /** The "tap the basket" step: prompt text, the box to draw, and whether OK / Fix are offered. */
+  function setMark(view) {
+    markView = view;
+    root.dataset.mark = view.phase || '';
+    markPrompt.textContent = view.phase ? view.prompt : '';
+    markOk.hidden = !view.canOk;
+    markFix.hidden = !view.canFix;
+    // Only the mark step takes taps on the feed (debug tap mode is separate).
+    feed.classList.toggle('mark-tap', !!view.phase);
+    if (lastFeedInfo) updateFeed(lastFeedInfo);
+  }
 
   function renderLive(state) {
     el.roundLabel.textContent = `ROUND ${state.roundNumber}`;
@@ -199,6 +226,7 @@ export function createDisplay(root, { onStop }) {
     switch (state.screen) {
       case SCREEN.NOT_READY:
         el.reason.textContent = state.reason;
+        root.dataset.tapStep = state.reason === REASON.TAP_BASKET ? '1' : '0';
         break;
       case SCREEN.LIVE:
         renderLive(state);
@@ -218,17 +246,23 @@ export function createDisplay(root, { onStop }) {
   // ---- Camera feed: basket marker, what is missing, debug landmarks ----------
 
   feed.addEventListener('click', (e) => {
-    if (!tapFn) return;
+    const markOn = !!markView.phase && root.dataset.tapStep === '1';
+    if (!tapFn && !markOn) return;
     const r = feed.getBoundingClientRect();
     // The feed is shown mirrored; tap x is converted back to raw camera-frame x.
     // y is not mirrored. The outcome tracker uses it as the cage centre for a hand-set basket.
-    tapFn(
-      Math.min(1, Math.max(0, 1 - (e.clientX - r.left) / r.width)),
-      Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
-    );
+    const x = Math.min(1, Math.max(0, 1 - (e.clientX - r.left) / r.width));
+    const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    if (markOn) onMarkTap(x, y); else tapFn(x, y);
   });
 
-  function drawFeed({ landmarks, basketX, anchorX, feetX, debug }) {
+  let lastFeedInfo = null;
+
+  function drawFeed(info) {
+    lastFeedInfo = info;
+    const {
+      landmarks, basketX, anchorX, feetX, debug, basketBox,
+    } = info;
     const W = ov.width;
     const H = ov.height;
     ovCtx.clearRect(0, 0, W, H);
@@ -241,10 +275,24 @@ export function createDisplay(root, { onStop }) {
       ovCtx.lineTo(xn * W, H);
       ovCtx.stroke();
     };
-    if (basketX != null) {
+    // The cage box (top band to tray): while marking it is the preview, afterwards the locked box.
+    const box = markView.phase ? markView.box : basketBox;
+    if (box && box.wn != null && box.hn != null) {
+      const bx = (box.xn - box.wn / 2) * W; const by = (box.yn - box.hn / 2) * H;
+      const bw = box.wn * W; const bh = box.hn * H;
+      ovCtx.setLineDash([]);
+      ovCtx.lineWidth = 5; ovCtx.strokeStyle = '#000'; ovCtx.strokeRect(bx, by, bw, bh);
+      ovCtx.lineWidth = 2.5; ovCtx.strokeStyle = '#ffe100'; ovCtx.strokeRect(bx, by, bw, bh);
+      ovCtx.lineWidth = 4; ovCtx.strokeStyle = '#ffb000'; // top band and tray
+      ovCtx.beginPath();
+      ovCtx.moveTo(bx - 4, by); ovCtx.lineTo(bx + bw + 4, by);
+      ovCtx.moveTo(bx - 4, by + bh); ovCtx.lineTo(bx + bw + 4, by + bh);
+      ovCtx.stroke();
+    } else if (basketX != null) {
       vline(basketX, '#000', 6, []);
       vline(basketX, '#ffb000', 3, [10, 6]);
     }
+    if (markView.phase) return; // nothing else while marking
     if (!debug) return;
     if (anchorX != null) vline(anchorX, '#00d84a', 2, [4, 4]);
     if (feetX != null) vline(feetX, '#00e5ff', 2, []);
@@ -278,14 +326,16 @@ export function createDisplay(root, { onStop }) {
       feedAspect = info.aspect;
       feed.style.aspectRatio = String(feedAspect);
     }
-    const ovH = Math.round(320 / feedAspect);
-    if (ov.width !== 320 || ov.height !== ovH) { ov.width = 320; ov.height = ovH; }
+    // Sharper overlay while marking (the feed is large then).
+    const ovW = markView.phase ? 960 : 320;
+    const ovH = Math.round(ovW / feedAspect);
+    if (ov.width !== ovW || ov.height !== ovH) { ov.width = ovW; ov.height = ovH; }
     drawFeed(info);
 
     const items = [];
     if (info.poseStatus === 'loading') items.push('MODEL LOADING');
     else if (info.poseStatus === 'failed') items.push('MODEL FAILED');
-    if (info.basketX == null) items.push('NO BASKET');
+    if (info.basketX == null && !markView.phase) items.push('NO BASKET');
     if (info.poseStatus === 'ready' && VIEW_TEXT[info.view]) items.push(VIEW_TEXT[info.view]);
     const key = items.join('|');
     if (key !== readoutKey) {
@@ -324,5 +374,7 @@ export function createDisplay(root, { onStop }) {
     if (root.dataset.near !== v) root.dataset.near = v;
   }
 
-  return { render, video: q('.corner'), updateFeed, setFeedLarge, onFeedTap, setLiveDistance, setNear };
+  return {
+    render, video: q('.corner'), updateFeed, setFeedLarge, onFeedTap, setLiveDistance, setNear, setMark,
+  };
 }

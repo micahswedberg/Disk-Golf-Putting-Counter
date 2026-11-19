@@ -4,6 +4,7 @@
 import { CONFIG } from './config.js';
 import { SCREEN, createState, reduce, isFlash } from './state.js';
 import { createDisplay } from './display.js';
+import { createBasketMark } from './mark.js';
 import { renderSetup } from './setup.js';
 import * as cam from './camera.js';
 import { createPose } from './pose.js';
@@ -31,7 +32,6 @@ let lastFrame = null;
 let lastFlags = {};
 let lastDebugAt = 0;
 let bigFeed = false;
-let tapArmed = false;
 let lastMotionAt = 0;
 
 // Phase 4/5b: throw detection. By default (AUTO) the result comes from the disc tracker and the
@@ -124,9 +124,9 @@ function onVerdict(v) {
   }
 }
 
-// Phase 5a: the basket is located automatically (outcome.js). When it is found, its x replaces the
-// temporary Phase 3 value and the FINDING BASKET screen clears. A manual tap (debug) or a fixed
-// CONFIG.BASKET_X_NORM overrides the search.
+// The basket is marked by the user at startup (mark.js): a tap, refined to the cage box (top band to
+// tray) by the finder (outcome.js). When the box is confirmed, its x goes to the round tracker and
+// the TAP THE BASKET screen clears. A fixed CONFIG.BASKET_X_NORM, or BASKET.AUTO_FIND, still work.
 const finder = createBasketFinder({
   onFound(xn) {
     tracker.setBasketX(xn);
@@ -184,6 +184,16 @@ function syncFlags(want) {
   dispatch({ type: 'flags', patch });
 }
 
+/** The locked cage box for the small feed; a plain tap has no size yet, so a typical one is drawn. */
+function basketBoxForFeed() {
+  const b = finder.getInfo().locked;
+  if (!b || b.yn == null) return null;
+  if (b.wn != null && b.hn != null) return b;
+  const hn = CONFIG.BASKET.TAP_BOX_H;
+  const aspect = lastFrame ? lastFrame.w / lastFrame.h : 16 / 9;
+  return { ...b, hn, wn: (hn * CONFIG.BASKET.TAP_BOX_ASPECT) / aspect };
+}
+
 function pushBasketFlag() {
   syncFlags({ basket: tracker.getBasketX() != null });
   pushFeed();
@@ -198,6 +208,7 @@ function pushFeed() {
     aspect: lastFrame ? lastFrame.w / lastFrame.h : null,
     landmarks: lastFrame ? lastFrame.landmarks : null,
     basketX: tracker.getBasketX(),
+    basketBox: basketBoxForFeed(),
     anchorX: snap.anchorXn ?? null,
     feetX: snap.feetXn ?? null,
     view: snap.view ?? 'none',
@@ -250,36 +261,28 @@ function onPoseFrame(frame) {
 // ---- Debug: basket placement (tap the enlarged feed) ----------------------------
 
 function applyFeedMode() {
-  display.setFeedLarge(bigFeed || tapArmed, tapArmed);
+  display.setFeedLarge(bigFeed, false);
 }
 
-function onBasketTap(x, y) {
-  finder.lock(x, y); // manual override: stops the search; x for the round, y for the outcome box
-  tapArmed = false;
-  display.onFeedTap(null);
-  applyFeedMode();
+/** Forget the basket and run the "tap the basket" step again. */
+function remarkBasket() {
+  tracker.setBasketX(null);
+  finder.clear();
+  mark.begin();
+  pushBasketFlag(); // basket flag off -> the TAP THE BASKET screen
 }
 
 const basketTools = {
-  toggleTap() {
-    tapArmed = !tapArmed;
-    display.onFeedTap(tapArmed ? onBasketTap : null);
-    applyFeedMode();
-  },
+  toggleTap() { remarkBasket(); }, // debug button: mark the basket again
   toggleBig() {
     bigFeed = !bigFeed;
     applyFeedMode();
   },
-  clear() {
-    tracker.setBasketX(null);
-    finder.reset(); // search again
-    pushBasketFlag();
-  },
+  clear() { remarkBasket(); },
 };
 
 function resetFeedMode() {
   bigFeed = false;
-  tapArmed = false;
   display.onFeedTap(null);
   applyFeedMode();
 }
@@ -323,6 +326,8 @@ async function startSession({ heightIn } = {}) {
   lastFrame = null;
   lastFlags = {};
   dispatch({ type: 'start', sessionId: `s${Date.now()}`, camera: false, audio: false });
+  finder.clear();
+  mark.begin(); // the TAP THE BASKET step is shown as soon as the camera is on
   pushBasketFlag();
 
   const stopped = () => state.screen === SCREEN.SETUP;
@@ -356,6 +361,7 @@ async function stopSession() {
   detector.reset();
   outcome.reset();
   clearRoundEndHold();
+  mark.cancel();
   resetFeedMode();
   dispatch({ type: 'stop' });
   exitFullscreen();
@@ -363,7 +369,19 @@ async function stopSession() {
   setup.setBusy(false);
 }
 
-const display = createDisplay(screenRoot, { onStop: stopSession });
+const display = createDisplay(screenRoot, {
+  onStop: stopSession,
+  onMarkTap: (x, y) => mark.tap(x, y),
+  onMarkOk: () => mark.ok(),
+  onMarkFix: () => mark.fix(),
+  onRemark: remarkBasket,
+});
+const mark = createBasketMark({
+  refine: (x, y) => finder.mark(x, y),
+  aspect: () => (lastFrame ? lastFrame.w / lastFrame.h : (display.video.videoWidth / display.video.videoHeight) || 16 / 9),
+  onChange: (v) => display.setMark(v),
+  onCommit: (box) => finder.commit(box), // onFound -> tracker.setBasketX + basket flag
+});
 const outcome = createOutcomeTracker({ video: display.video, onVerdict });
 const setup = renderSetup(setupRoot, { onStart: startSession });
 const pose = createPose({

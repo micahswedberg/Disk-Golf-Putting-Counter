@@ -25,6 +25,7 @@ button { font: inherit; cursor: pointer; }
 }
 .card figcaption { font-size: 13px; font-weight: 800; }
 .card svg { flex: 1 1 auto; min-height: 0; width: 100%; height: 100%; color: #111; }
+.setup-steps { margin: 0; padding-left: 22px; font-size: 14px; line-height: 1.35; }
 .setup-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .setup-foot label { font-weight: 700; }
 #heightIn {
@@ -151,3 +152,35 @@ button { font: inherit; cursor: pointer; }
 /* On the setup screen the tray sits at the top, collapsed, so it never covers the Start button. */
 #debug.on-setup { top: 0; bottom: auto; max-height: none; overflow: visible; }
 #debug.on-setup .dbg-body { display: none; }
+
+
+/* ---- Tap the basket (startup step, shown as NOT_READY / TAP THE BASKET) ---------------------- */
+/* The camera view fills the screen so the basket can be tapped accurately; prompt and buttons sit
+   on thin bars over its top and bottom edges. */
+.mark-prompt, .mark-btns, .remark { display: none; }
+#screen[data-tap-step="1"] .warn,
+#screen[data-tap-step="1"] .reason { display: none; }
+#screen[data-tap-step="1"] .feed {
+  top: 0; left: 50%; transform: translateX(-50%);
+  height: 100dvh; width: auto; max-width: 100vw; border: 0; border-radius: 0; opacity: 1; z-index: 2;
+}
+#screen[data-tap-step="1"] .feed.mark-tap { pointer-events: auto; cursor: crosshair; }
+#screen[data-tap-step="1"] .feed-readout { display: none; }
+#screen[data-tap-step="1"] .mark-prompt {
+  display: block; position: absolute; top: 0; left: 0; right: 0; z-index: 4;
+  padding: 1.2vh 3vw; background: rgba(0, 0, 0, 0.72); color: #fff; text-align: center;
+  font-size: min(6.2vh, 3.6vw); line-height: 1.15; font-weight: 800;
+}
+#screen[data-tap-step="1"] .mark-btns {
+  display: flex; gap: 2vw; position: absolute; right: 2vw; bottom: 2vh; z-index: 4;
+}
+.mark-btns button {
+  font-size: min(6vh, 3.4vw); font-weight: 800; padding: 1.4vh 3vw; min-height: 52px;
+  border: 0; border-radius: 10px; background: #1a5cff; color: #fff;
+}
+.mark-btns .mark-fix { background: rgba(0, 0, 0, 0.72); border: 2px solid #fff; }
+#screen[data-screen="NOT_READY"][data-tap-step="0"] .remark {
+  display: block; position: absolute; left: calc(1.5vw + 72px); bottom: 1.5vh; z-index: 3;
+  font-size: 12px; font-weight: 700; padding: 4px 10px; min-height: 28px;
+  background: transparent; color: var(--fg); border: 1px solid var(--fg); border-radius: 6px; opacity: 0.55;
+}

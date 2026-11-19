@@ -26,7 +26,8 @@ export const SCREEN = Object.freeze({
 export const REASON = Object.freeze({
   NO_CAMERA: 'NO CAMERA',
   NO_AUDIO: 'NO AUDIO',
-  FINDING_BASKET: 'FINDING BASKET',
+  FINDING_BASKET: 'FINDING BASKET', // no longer shown: the user marks the basket (TAP_BASKET)
+  TAP_BASKET: 'TAP THE BASKET',
   STEP_INTO_FRAME: 'STEP INTO FRAME',
   STAND_STILL: 'STAND STILL',
   TRACKING_LOST: 'TRACKING LOST',
@@ -92,9 +93,9 @@ export function createState() {
 function reasonFor(s) {
   const f = s.flags;
   if (!f.camera) return REASON.NO_CAMERA;
+  if (!f.basket) return REASON.TAP_BASKET; // before the audio check: the tap needs only the camera
   if (!f.audio) return REASON.NO_AUDIO;
   if (s.lost) return REASON.TRACKING_LOST;
-  if (!f.basket) return REASON.FINDING_BASKET;
   if (!f.player) return REASON.STEP_INTO_FRAME;
   return REASON.STAND_STILL;
 }
