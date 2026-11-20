@@ -274,6 +274,10 @@ export const CONFIG = {
     STAY_FULL_FRAMES: 4, // frames of a resting disc in the cage for full confidence
     TRACKLESS_MAX_U: 4, // with no flight track, resting discs count only this close to the basket
     TRACKLESS_CONF: 0.65, // confidence ceiling when the disc was never followed in flight
+    STAY_LINK_MAX_FT: 1.5, // a new resting blob must be close to this throw's final tracked position
+    STAY_PREEXIST_RADIUS_FT: 0.75, // reject resting blobs overlapping a disc already visible before release
+    STAY_LINK_MAX_MS: 700, // maximum gap from the last moving detection to its new resting blob
+    PASS_TRACK_CONF: 0.80, // a coherent post-arrival track beyond the cage can validate a weak flight fit
     ALLOW_TRACKLESS: true,
     ALLOW_SILENT_MAKE: true, // a make with neither a chain sound nor a resting disc seen, only "arrived, nothing came out"
     SILENT_CONF: 0.62, // its confidence (CONF_MIN_MAKE above this turns it off)

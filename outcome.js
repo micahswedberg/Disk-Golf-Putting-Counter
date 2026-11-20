@@ -1119,12 +1119,13 @@ function findRestClusters(fr, cfg) {
  *            peak speed comes up to ~0.5 s before the disc leaves the hand on a slow putt)
  *   entry    a moving blob inside the cage zone after the release (with no flight track, e.g. when
  *            frames were too sparse to follow the disc, this is the arrival)
- *   stay     a NEW still blob inside the cage that persists: a disc resting in the tray
+ *   stay     a NEW still blob inside the cage, linked to this throw's final tracked position
  *   rest     a NEW still blob outside the cage: a landed or dropped disc
  *   exit     a moving track leaving the cage after contact
  *   chain    the chain sound at contact (supporting only: a cage hit makes it too)
  * MISS: flew past, or rest outside, or exit.  MAKE: arrival, then (stay or chain), then SETTLE_MS of
- * healthy video with no exit and no rest outside.  Anything else is IGNORED.
+ * healthy video with no exit and no rest outside. Existing stationary basket discs are not
+ * positive evidence for a new make. Anything else is IGNORED.
  */
 export function analyzeThrow(ctx, cfg = CONFIG.OUTCOME) {
   const {
@@ -1254,21 +1255,55 @@ export function analyzeThrow(ctx, cfg = CONFIG.OUTCOME) {
   if (passPts >= 2) {
     const fPass = clamp01(passPts / 3);
     ev.factors.pass = fPass;
-    return missResult('long', 'flew past', Math.min(fTrack, fPass));
+    // A consistent set of detections beyond the cage is direct miss evidence. Do not let a
+    // mediocre whole-flight fit erase that independent evidence.
+    return missResult('long', 'flew past', Math.max(fTrack, fPass * cfg.PASS_TRACK_CONF));
   }
 
-  // 2. Still blobs that appeared after the release: a disc resting in the cage (stay) or outside it (rest).
-  const clusters = findRestClusters(fr.filter((f) => f.t >= thr.t - 600), cfg)
+  // 2. Still blobs after release. A resting blob may support THIS make only when it is
+  // spatially linked to this throw's final moving track and was not already present before
+  // release. A stationary disc elsewhere in a basket containing earlier putts is not evidence.
+  const allRest = findRestClusters(fr.filter((f) => f.t >= thr.t - 600), cfg)
     .filter((k) => k.firstT > thr.t + 100 && k.count >= cfg.REST_MIN_FRAMES && k.lastT - k.firstT >= cfg.REST_MIN_MS)
     .filter((k) => (last
       ? Math.hypot(k.fx - last.fx, k.fy - last.fy) <= cfg.REST_NEAR_TRACK_FT
       : Math.abs(k.u) <= cfg.TRACKLESS_MAX_U && Math.abs(k.v) <= cfg.TRACKLESS_MAX_U));
+
+  // Build a small map of stationary objects visible in multiple pre-release frames.
+  const preStill = [];
+  const baselineFrames = fr.filter((f) => f.t >= thr.t - 1500 && f.t < thr.t - 200);
+  for (const f of baselineFrames) {
+    for (const q of f.blobs) {
+      if (q.body || q.move > cfg.REST_MOVE_MAX) continue;
+      let k = preStill.find((x) => Math.hypot(q.fx - x.fx, q.fy - x.fy) <= cfg.REST_RADIUS_FT);
+      if (!k) { k = { fx: q.fx, fy: q.fy, count: 0, lastT: -Infinity }; preStill.push(k); }
+      // Count distinct frames, not multiple fragments of the same object in one frame.
+      if (k.lastT !== f.t) {
+        k.fx = (k.fx * k.count + q.fx) / (k.count + 1);
+        k.fy = (k.fy * k.count + q.fy) / (k.count + 1);
+        k.count += 1;
+        k.lastT = f.t;
+      }
+    }
+  }
+  const wasAlreadyThere = (k) => preStill.some((p) => p.count >= 2
+    && Math.hypot(k.fx - p.fx, k.fy - p.fy) <= cfg.STAY_PREEXIST_RADIUS_FT);
   const inCore = (k) => Math.abs(k.u) <= cfg.CORE_U && Math.abs(k.v) <= cfg.CORE_V;
   const outside = (k) => Math.abs(k.u) > cfg.REST_OUT_U || Math.abs(k.v) > cfg.REST_OUT_V;
   const byCount = (p, q) => q.count - p.count;
-  const restOut = clusters.filter(outside).sort(byCount)[0] || null;
-  const stay = clusters.filter(inCore).sort(byCount)[0] || null;
-  const restBand = clusters.some((k) => !inCore(k) && !outside(k));
+  const restCandidates = allRest.filter((k) => !wasAlreadyThere(k));
+  const restOut = restCandidates.filter(outside).sort(byCount)[0] || null;
+
+  // Only call a cluster a current-throw stay if the moving track ended in the arrival zone
+  // and the new still blob is close in both space and time.
+  const linkedStayCandidates = last && inZone(last, cfg.ARRIVE_U, cfg.ARRIVE_V)
+    ? restCandidates.filter((k) => inCore(k)
+      && Math.hypot(k.fx - last.fx, k.fy - last.fy) <= cfg.STAY_LINK_MAX_FT
+      && k.firstT >= last.t - 150
+      && k.firstT <= last.t + cfg.STAY_LINK_MAX_MS)
+    : [];
+  const stay = linkedStayCandidates.sort(byCount)[0] || null;
+  const restBand = restCandidates.some((k) => !inCore(k) && !outside(k));
   ev.rest = restOut ? { u: restOut.u, v: restOut.v, count: restOut.count } : null;
   ev.stay = stay ? { u: stay.u, v: stay.v, count: stay.count, firstT: stay.firstT, lastT: stay.lastT } : null;
   ev.restBand = restBand;
@@ -1299,7 +1334,9 @@ export function analyzeThrow(ctx, cfg = CONFIG.OUTCOME) {
   if (beyondTrk) {
     const fB = clamp01(beyondTrk.n / 4);
     ev.factors.pass = fB;
-    return missResult('long', 'went past the basket', Math.min(fTrack || cfg.TRACKLESS_CONF, fB));
+    // The post-arrival beyond-cage track is independent evidence of a long miss;
+    // a weak fit to the earlier flight should not collapse its confidence to near zero.
+    return missResult('long', 'went past the basket', Math.max(fTrack || cfg.TRACKLESS_CONF, fB * cfg.PASS_TRACK_CONF));
   }
 
   // 4. Contact: chain sound (supporting) and/or a disc that stays.
@@ -1310,7 +1347,7 @@ export function analyzeThrow(ctx, cfg = CONFIG.OUTCOME) {
   ev.chain = cm ? { dtMs: cm.t - arr.t, riseDb: cm.riseDb, bands: cm.bandsHit, durMs: cm.durMs } : null;
   // A resting disc must still be there, or have been there for about the settle time; a short-lived
   // cluster (chains swaying) is not evidence.
-  const stayOk = !!stay && stay.firstT >= arr.t - 300
+  const stayOk = !!stay && !trackless && stay.firstT >= arr.t - 300
     && (stay.lastT - stay.firstT >= cfg.SETTLE_MS - 250 || stay.lastT >= lastFrameT - 300);
   let contactT = arr.t;
   if (cm) { // a second clank soon after the first pushes the call back
@@ -1374,7 +1411,8 @@ export function analyzeThrow(ctx, cfg = CONFIG.OUTCOME) {
   if (fps < cfg.MIN_FPS || maxGap > cfg.MAX_GAP_SETTLE_MS) return ignore('video too sparse after contact');
   if (baseFrac > cfg.EXIT_BASE_MAX) return ignore('busy scene around the basket');
   if (weakFrames >= cfg.EXIT_WEAK_FRAMES) return ignore('ambiguous motion after contact');
-  if (restBand) return ignore('ambiguous resting disc near the cage');
+  // A confirmed in-core resting disc outweighs secondary, weaker blobs in the boundary band.
+  if (restBand && !stayOk) return ignore('ambiguous resting disc near the cage');
 
   const fAudio = cm ? clamp01(((cm.riseDb ?? 0) - 8) / 12) : 0;
   const fStay = stayOk ? clamp01(stay.count / cfg.STAY_FULL_FRAMES) : 0;
@@ -1386,11 +1424,16 @@ export function analyzeThrow(ctx, cfg = CONFIG.OUTCOME) {
   ev.factors.density = fDensity;
   const fSilent = silent ? cfg.SILENT_CONF : 0;
   ev.factors.silent = fSilent;
-  const conf = Math.min(fTrack, Math.max(fAudio, fStay, fSilent), ev.factors.cover, ev.factors.quiet, ev.factors.arrival, fDensity);
+  // Do not let a resting-disc detection boost flight confidence: earlier putts may already
+  // occupy the basket. A linked stay is supporting evidence only; the current throw's own
+  // flight confidence remains the track factor.
+  const makeTrackConf = fTrack;
+  ev.factors.makeTrack = makeTrackConf;
+  const conf = Math.min(makeTrackConf, Math.max(fAudio, fStay, fSilent), ev.factors.cover, ev.factors.quiet, ev.factors.arrival, fDensity);
   ev.factors.final = conf;
   if (conf < cfg.CONF_MIN_MAKE) return ignore('low confidence (make)');
   return {
-    state: 'done', result: 'make', missDirection: null, reason: silent ? 'in, nothing came out (no sound, no resting disc seen)' : stayOk && !cm ? 'in and stayed (no sound)' : 'in and stayed', conf, ev,
+    state: 'done', result: 'make', missDirection: null, reason: silent ? 'arrived; no chain sound or linked new resting disc' : stayOk && !cm ? 'arrived and linked new disc stayed (no sound)' : 'chain contact and settled', conf, ev,
   };
 }
 
