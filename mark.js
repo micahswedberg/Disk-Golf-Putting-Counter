@@ -18,9 +18,9 @@ import { CONFIG } from './config.js';
 
 export const PROMPT = Object.freeze({
   tap: 'Tap the middle of the basket',
-  confirmRefined: 'Box runs top band to tray. OK, or tap again.',
-  confirmPlain: 'Edges not found, using your tap. OK, tap again, or fix.',
-  confirmHand: 'Box from your two taps. OK, or tap again.',
+  confirmRefined: 'Basket found (green box). OK, or tap again.',
+  confirmPlain: 'Not found: using your tap (orange box). OK, tap again, or fix.',
+  confirmHand: 'Box set by hand (green). OK, or tap again.',
   top: 'Tap the TOP band of the basket',
   bottom: 'Now tap the BOTTOM of the basket (the tray)',
 });
@@ -49,7 +49,7 @@ export function createBasketMark({ refine, aspect = () => 16 / 9, onChange, onCo
 
   /** A box to draw for a plain tap: the real size comes later from the scale. */
   const plainPreview = (xn, yn) => ({
-    xn, yn, hn: C.TAP_BOX_H, wn: (C.TAP_BOX_H * C.TAP_BOX_ASPECT) / aspect(),
+    xn, yn, hn: C.TAP_BOX_H, wn: (C.TAP_BOX_H * C.TAP_BOX_ASPECT) / aspect(), refined: false, how: 'tap',
   });
 
   return {
@@ -65,7 +65,7 @@ export function createBasketMark({ refine, aspect = () => 16 / 9, onChange, onCo
       if (phase === 'tap' || phase === 'confirm') {
         const b = refine(xn, yn);
         pending = b;
-        preview = b.refined ? { xn: b.xn, yn: b.yn, wn: b.wn, hn: b.hn } : plainPreview(xn, yn);
+        preview = b.refined ? { xn: b.xn, yn: b.yn, wn: b.wn, hn: b.hn, refined: true, how: 'found' } : plainPreview(xn, yn);
         note = b.refined ? PROMPT.confirmRefined : PROMPT.confirmPlain;
         phase = 'confirm';
       } else if (phase === 'top') {
@@ -85,11 +85,12 @@ export function createBasketMark({ refine, aspect = () => 16 / 9, onChange, onCo
           wn: (hn * C.TAP_BOX_ASPECT) / aspect(),
           manual: true,
           refined: true,
+          how: 'hand',
           score: null,
           band: null,
         };
         pending = box;
-        preview = { xn: box.xn, yn: box.yn, wn: box.wn, hn: box.hn };
+        preview = { xn: box.xn, yn: box.yn, wn: box.wn, hn: box.hn, refined: true, how: 'hand' };
         note = PROMPT.confirmHand;
         phase = 'confirm';
       }

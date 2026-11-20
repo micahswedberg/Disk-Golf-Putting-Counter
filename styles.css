@@ -184,3 +184,6 @@ button { font: inherit; cursor: pointer; }
   font-size: 12px; font-weight: 700; padding: 4px 10px; min-height: 28px;
   background: transparent; color: var(--fg); border: 1px solid var(--fg); border-radius: 6px; opacity: 0.55;
 }
+
+/* The debug tray would cover the OK button, so it steps aside while the basket is being marked. */
+body:has(#screen[data-tap-step="1"]) #debug { display: none; }

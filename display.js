@@ -280,14 +280,29 @@ export function createDisplay(root, {
     if (box && box.wn != null && box.hn != null) {
       const bx = (box.xn - box.wn / 2) * W; const by = (box.yn - box.hn / 2) * H;
       const bw = box.wn * W; const bh = box.hn * H;
-      ovCtx.setLineDash([]);
+      // Green = the edges were found (or set by hand); orange dashed = only your tap, size guessed.
+      const sure = !!box.refined;
+      const col = sure ? '#2cff6a' : '#ff8a00';
+      const label = box.how === 'found' ? 'BASKET FOUND' : box.how === 'hand' ? 'SET BY HAND' : 'TAP ONLY - SIZE GUESSED';
+      const px = Math.max(11, Math.round(W / 40));
+      ovCtx.setLineDash(sure ? [] : [8, 5]);
       ovCtx.lineWidth = 5; ovCtx.strokeStyle = '#000'; ovCtx.strokeRect(bx, by, bw, bh);
-      ovCtx.lineWidth = 2.5; ovCtx.strokeStyle = '#ffe100'; ovCtx.strokeRect(bx, by, bw, bh);
-      ovCtx.lineWidth = 4; ovCtx.strokeStyle = '#ffb000'; // top band and tray
+      ovCtx.lineWidth = 2.5; ovCtx.strokeStyle = col; ovCtx.strokeRect(bx, by, bw, bh);
+      ovCtx.setLineDash([]);
+      ovCtx.lineWidth = 4; ovCtx.strokeStyle = col; // top band and tray
       ovCtx.beginPath();
       ovCtx.moveTo(bx - 4, by); ovCtx.lineTo(bx + bw + 4, by);
       ovCtx.moveTo(bx - 4, by + bh); ovCtx.lineTo(bx + bw + 4, by + bh);
       ovCtx.stroke();
+      // The overlay canvas is mirrored with the feed, so the label is drawn mirrored back.
+      ovCtx.save();
+      ovCtx.translate(bx + bw / 2, Math.max(px + 2, by - 6));
+      ovCtx.scale(-1, 1);
+      ovCtx.font = `800 ${px}px system-ui, sans-serif`;
+      ovCtx.textAlign = 'center';
+      ovCtx.lineWidth = 4; ovCtx.strokeStyle = '#000'; ovCtx.strokeText(label, 0, 0);
+      ovCtx.fillStyle = col; ovCtx.fillText(label, 0, 0);
+      ovCtx.restore();
     } else if (basketX != null) {
       vline(basketX, '#000', 6, []);
       vline(basketX, '#ffb000', 3, [10, 6]);

@@ -279,7 +279,7 @@ export function createBasketFinder({ onFound } = {}) {
      */
     mark(xn, yn) {
       const plain = () => ({
-        xn, yn, wn: null, hn: null, manual: true, refined: false, score: null, band: null,
+        xn, yn, wn: null, hn: null, manual: true, refined: false, how: 'tap', score: null, band: null,
       });
       if (!video || video.readyState < 2 || !video.videoWidth) return plain();
       const vw = video.videoWidth; const vh = video.videoHeight;
@@ -313,6 +313,7 @@ export function createBasketFinder({ onFound } = {}) {
         hn: ((best.y1 - best.y0) / h) * (fy1 - fy0),
         manual: true,
         refined: true,
+        how: 'found',
         score: best.score,
         band: best.band,
       };
@@ -327,7 +328,7 @@ export function createBasketFinder({ onFound } = {}) {
     /** Manual override (debug tap): accept this x (and y = cage centre) and stop searching. The
      *  box size is filled in later from the scale (createOutcomeTracker.setScene). */
     lock(xn, yn = null) {
-      accept({ xn, yn, wn: null, hn: null, manual: true, refined: false });
+      accept({ xn, yn, wn: null, hn: null, manual: true, refined: false, how: 'tap' });
     },
     /** Player's x span in raw-frame coordinates, so the player is not mistaken for the basket. */
     setExclude(span) { exclude = span; excludeAt = performance.now(); },

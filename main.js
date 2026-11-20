@@ -191,7 +191,7 @@ function basketBoxForFeed() {
   if (b.wn != null && b.hn != null) return b;
   const hn = CONFIG.BASKET.TAP_BOX_H;
   const aspect = lastFrame ? lastFrame.w / lastFrame.h : 16 / 9;
-  return { ...b, hn, wn: (hn * CONFIG.BASKET.TAP_BOX_ASPECT) / aspect };
+  return { ...b, hn, wn: (hn * CONFIG.BASKET.TAP_BOX_ASPECT) / aspect, refined: false, how: 'tap' };
 }
 
 function pushBasketFlag() {
