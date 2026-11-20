@@ -39,10 +39,10 @@ A round ends when you leave the throwing spot toward the basket. Bending to your
 
 All of this is in `outcome.js`, with thresholds in `config.js` under `OUTCOME`. The cage box from the basket step (top band to tray) is the area the disc must enter and stay in.
 
-1. **Disc tracking.** A slow background model plus a frame difference, inside a corridor from the thrower to past the basket, gives small moving blobs. A ballistic fit through blobs that start at the hand makes the flight track.
-2. **Miss evidence.** The track flies on past the cage (long); a new still blob (a landed disc) appears outside the cage (short or long); or a moving track leaves the cage after contact (bounce-out or drop-out).
-3. **Make evidence.** The track reaches the cage, the chain sound matches the contact, then a 1 s settle window passes with healthy video and no exit evidence. The disc must also have been seen often enough in flight that a missed exit is unlikely.
-4. **Otherwise the throw is ignored.** A chain sound alone never scores. Each verdict carries a confidence made of several 0 to 1 factors (the weakest one counts).
+1. **Disc tracking.** A background model plus a frame difference, inside a corridor from the thrower to past the basket, gives small moving blobs. This runs in a worker (`disc-worker.js`) at the camera's frame rate, because pose tracking keeps the main thread busy. A ballistic fit through the blobs makes the flight track. The release time is only a rough guide (the wrist's peak speed can come about 0.5 s before a slow putt leaves the hand).
+2. **Miss evidence.** The disc flies on past the cage (long); a new still blob (a landed disc) appears outside the cage, including on the ground at the pole (short or long); or a moving track leaves the cage after contact (bounce-out or drop-out).
+3. **Make evidence.** The disc arrives in the cage (followed, or just a moving blob entering it), then a 1 s settle window passes with healthy video, nothing leaving and nothing resting outside. A new still blob that stays in the cage (a disc in the tray) or a chain sound at contact raises confidence. With neither, a make is still called at low confidence (`SILENT_CONF`; set `CONF_MIN_MAKE` above it to turn that off).
+4. **Otherwise the throw is ignored.** A chain sound alone never scores. Each verdict carries a confidence made of several 0 to 1 factors (the weakest one counts). Thresholds are loosened for tuning, so expect some wrong calls: send the replay file after each session.
 5. **Left / right misses** are not reported: a side-on camera cannot see depth, so only short and long are given.
 6. **Gates.** If the cage box is implausible for the scale (for example a tree) or the basket distance is out of range, every throw is ignored.
 
@@ -91,6 +91,7 @@ The tray hides itself during the basket step so it never covers the OK button.
 | `round.js` | Player presence, still and upright tests, anchor spot, distance scale, round end |
 | `throws.js` | Throw detection from wrist motion |
 | `outcome.js` | Basket finder and tap refinement, chain-sound detector, disc watcher, make/miss analysis, judge queue |
+| `disc-worker.js` | Web worker: reads the camera frames and extracts disc blobs off the main thread |
 | `main.js` | Wires everything together |
 | `debug.js`, `outcome-debug.js` | `?debug=1` panels (loaded only in debug mode) |
 
@@ -109,7 +110,7 @@ Bucket index = `clamp(floor((distanceFt - 10) / 5), 0, 5)`. A throw that cannot 
 - The disc is only about 30 px wide at 1080p, so disc tracking will be hard and some throws will be ignored rather than guessed.
 - Chrome cannot force landscape without fullscreen. The app asks for fullscreen on Start, but rotate the phone yourself if it does not switch.
 - The tap refinement looks for a top band and a tray (horizontal edges) and dense vertical lines (chains) near your tap. On one real frame, with a thin-chained basket in front of a fence, it found the cage within a few pixels for taps near the centre. Always check the box colour and outline before pressing OK. If it is orange, the size comes from your height and the scale.
-- The make/miss logic has only been tested on synthetic putts. The thresholds are conservative first guesses, and a throw it cannot judge is ignored, so expect many ignored throws until it is tuned on real data. Pose tracking and disc tracking share the phone, so check the `ms` figure in the OUT panel.
+- The make/miss logic has only been tested on synthetic putts. The thresholds are conservative first guesses, and a throw it cannot judge is ignored, so expect many ignored throws until it is tuned on real data. Pose tracking runs at about 12 fps and uses the main thread, so disc tracking runs in a worker. The OUT panel shows `(worker)` or `(main)` and the fps: if it says main, or fps is far below 25, the disc cannot be followed. Keep the tab in the foreground during a session (a hidden tab stops the camera frames).
 - The chain detector flags short, bright, broadband bursts. Footsteps and wind are rejected by design, but speech and claps can still trigger it, and a faint rattle 30 ft away may be missed. Make/miss only accepts a sound that follows a visual disc contact.
 - Distances are expected to be within about 1 to 2 ft.
 

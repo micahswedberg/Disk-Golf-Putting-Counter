@@ -210,14 +210,15 @@ export const CONFIG = {
   OUTCOME: {
     // Frame source (a background model and frame difference inside a corridor around the putt line)
     ANALYSIS_W: 960, // the video is scaled to this width for analysis (disc is ~15 px wide here)
-    BG_ALPHA: 0.02, // background follows the scene at this rate per frame (a resting disc fades in ~2 s)
+    BG_TAU_S: 2.5, // the background follows the scene with this time constant (a resting disc fades in a few seconds)
+    BG_ALPHA: 0.03, // per-frame rate used only when no frame times are known
     FG_THRESH: 28, // brightness difference from the background that counts as foreground (0-255)
     MOVE_THRESH: 20, // brightness difference from the previous frame that counts as moving
     MIN_BLOB_PX: 8, // smaller blobs are noise (analysis pixels)
     MAX_BLOB_PX: 500, // bigger blobs are people, shadows, cloud edges
     MAX_BLOB_DIM_PX: 48,
     MAX_BLOBS: 10, // kept per frame (largest first)
-    WARMUP_FRAMES: 20, // frames after (re)start before blobs are trusted
+    WARMUP_FRAMES: 8, // frames after (re)start before blobs are trusted
     NOISE_FG_FRAC: 0.02, // more foreground than this in the corridor = the picture is too busy to judge
     FRAME_BUF_MS: 7000,
     // Corridor (fractions of the frame): from the thrower to past the basket, around the cage
@@ -230,18 +231,20 @@ export const CONFIG = {
     BOX_FT: [1.0, 4.0], // cage width and height must be in this range at the thrower's scale
     ANCHOR_FT: [6, 50], // thrower to basket distance must be in this range
     // Flight tracking
-    PRE_MS: 150, // frames this long before the release time are searched for the disc
-    START_WINDOW_MS: 450, // the disc must first be seen within this long after the release
-    START_RADIUS_FT: 5, // ...and within this distance of the hand
+    PRE_MS: 300, // frames this long before the release time are searched for the disc
+    START_WINDOW_MS: 1800, // the disc must first be seen within this long after the release (the wrist's peak
+    // speed is up to ~0.5 s before a slow putt leaves the hand)
+    START_RADIUS_FT: 60, // ...and within this distance of the hand (effectively off)
     PLAYER_PAD_FT: 1.0, // blobs this close to the body are the body, except right after release
     PLAYER_FREE_MS: 300,
     MIN_MOVE: 0.3, // share of a blob's pixels that also changed since the last frame, for flight
-    GATE_FT: 1.0, // how far from the predicted position the next detection may be
+    GATE_FT: 1.2, // how far from the predicted position the next detection may be...
+    GATE_PER_S: 3, // ...plus this much per second of gap since the last detection
     G_FTS2: 32.2,
     VX_MIN_FTS: 12, // forward speed range of a putt (ft/s)
     V_MAX_FTS: 90,
-    MAX_GAP_MS: 110, // longest gap between two detections of one track
-    MIN_TRACK_PTS: 4,
+    MAX_GAP_MS: 260, // longest gap between two detections of one track (a 6 fps feed has 170 ms between frames)
+    MIN_TRACK_PTS: 3,
     DENSITY_MIN: 0.35, // share of frames along the flight in which the disc was seen: below MIN a make is
     DENSITY_FULL: 0.65, // impossible (the exit could have been missed too), at FULL this factor is 1
     MAX_TRACK_RMS_FT: 0.8, // x(t) line fit and y(t) parabola fit residual
@@ -265,8 +268,16 @@ export const CONFIG = {
     EXIT_BASE_MAX: 0.25, // share of quiet frames before the throw with such blobs: above this the scene is too busy
     TRACK_LOST_MS: 1500, // track ended short of the cage and nothing new for this long = ignored
     // Resting-disc test (a disc that landed or dropped out)
-    REST_FRAMES: 5, // frames a static blob must persist
-    REST_MOVE_MAX: 0.2,
+    REST_MIN_FRAMES: 3, // frames a still blob must persist...
+    REST_MIN_MS: 300, // ...for at least this long
+    REST_MOVE_MAX: 0.5, // a resting disc may wobble
+    STAY_FULL_FRAMES: 4, // frames of a resting disc in the cage for full confidence
+    TRACKLESS_MAX_U: 4, // with no flight track, resting discs count only this close to the basket
+    TRACKLESS_CONF: 0.65, // confidence ceiling when the disc was never followed in flight
+    ALLOW_TRACKLESS: true,
+    ALLOW_SILENT_MAKE: true, // a make with neither a chain sound nor a resting disc seen, only "arrived, nothing came out"
+    SILENT_CONF: 0.62, // its confidence (CONF_MIN_MAKE above this turns it off)
+    BEYOND_MAX_U: 6, // moving blobs this far beyond the cage (after arrival) mean the disc went past
     REST_RADIUS_FT: 0.6,
     REST_NEAR_TRACK_FT: 8, // the resting blob must be this close to where the disc was last seen
     // Contact and settling
@@ -274,11 +285,11 @@ export const CONFIG = {
     SETTLE_MS: 1000, // wait this long after contact before calling a make
     AUDIO_LATE_MS: 700, // extra wait for a late audio event
     EXIT_MIN_PTS: 3, // an exit track (disc leaving the cage) needs this many detections
-    MIN_FPS: 15, // frames per second in the settle window needed to trust "nothing left"
-    MAX_GAP_SETTLE_MS: 150,
+    MIN_FPS: 5, // frames per second in the settle window needed to trust "nothing left"
+    MAX_GAP_SETTLE_MS: 450,
     // Confidence needed to show a verdict (each is the weakest of several 0-1 factors)
-    CONF_MIN_MAKE: 0.7,
-    CONF_MIN_MISS: 0.6,
+    CONF_MIN_MAKE: 0.6, // loosened for tuning: expect some wrong calls
+    CONF_MIN_MISS: 0.5,
     ALLOW_INFERRED_ARRIVAL: true,
     // Late verdicts at round end
     ROUND_END_HOLD_MAX_MS: 4000, // longest a round end waits for a throw still being judged

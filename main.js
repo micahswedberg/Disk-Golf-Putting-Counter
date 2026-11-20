@@ -338,7 +338,9 @@ async function startSession({ heightIn } = {}) {
     if (stopped()) return releaseDevices();
     dispatch({ type: 'flags', patch: { camera: true } });
     pose.start(); // loads the model in the background; the feed read-out says MODEL LOADING
-    outcome.start(); // disc watcher: idles until a round is live and the basket box is known
+    const vStream = cam.getStreams().video;
+    const vTrack = vStream ? vStream.getVideoTracks()[0] : null;
+    outcome.start(vTrack); // disc watcher (in a worker when the browser allows): idles until a round is live
     if (CONFIG.BASKET_X_NORM == null) finder.start(display.video); // else the fixed x is used
   } catch (err) {
     console.warn('camera failed:', err);

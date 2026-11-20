@@ -251,7 +251,7 @@ export function createOutcomeDebug(root, {
     const o = outcome.getInfo();
     const w = o.watcher;
     const lines = [
-      `disc: gate ${o.gate === null ? 'ok' : o.gate} \u00b7 watcher ${w.roi ? 'on' : 'idle'} ${f(w.fps, 0)} fps ${f(w.ms, 1)} ms`
+      `disc: gate ${o.gate === null ? 'ok' : o.gate} \u00b7 watcher ${w.roi ? 'on' : 'idle'} (${w.mode}) ${f(w.fps, 0)} fps ${f(w.ms, 1)} ms`
         + ` \u00b7 fg ${f(w.fgOut * 100, 2)}% \u00b7 ${w.w}x${w.h}px \u00b7 blobs ${o.frame ? o.frame.blobs.length : 0}`
         + (o.frame && o.frame.dropped ? ` \u00b7 dropped ${o.frame.dropped}` : ''),
     ];
@@ -268,6 +268,7 @@ export function createOutcomeDebug(root, {
       lines.push(`     ${e.trk ? `trk ${e.trk.n} pts rms ${f(e.trk.rms, 2)} dens ${pct(e.trk.density)} \u00b7 ` : ''}`
         + `${e.chain ? `chain ${f(e.chain.dtMs, 0)} ms rise ${f(e.chain.riseDb, 0)} dB \u00b7 ` : ''}`
         + `${e.rest ? `rest u ${f(e.rest.u)} v ${f(e.rest.v)} x${e.rest.count} \u00b7 ` : ''}`
+        + `${e.stay ? `stay x${e.stay.count} \u00b7 ` : ''}${e.trackless ? 'no track \u00b7 ' : ''}`
         + `${e.exit ? `exit ${e.exit.n} pts \u00b7 ` : ''}`
         + `${e.cover ? `fps ${f(e.cover.fps, 0)} gap ${f(e.cover.maxGapMs, 0)} \u00b7 ` : ''}`
         + `base ${pct(e.baseFrac)} weak ${e.exitWeakFrames ?? '--'} \u00b7 ${factorText(e.factors)}`);
