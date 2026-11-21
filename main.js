@@ -24,6 +24,34 @@ let state = createState();
 let flashTimer = 0;
 let seenFlashId = 0;
 let debugPanel = null;
+let processingOverlay = null;
+let throwAwaitingVerdict = false;
+
+// Full-screen status for the single automatic throw awaiting its verdict.
+function setProcessing(active) {
+  if (!processingOverlay) {
+    processingOverlay = document.createElement('div');
+    processingOverlay.textContent = 'processing...';
+    Object.assign(processingOverlay.style, {
+      position: 'fixed',
+      inset: '0',
+      zIndex: '10000',
+      display: 'none',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: '#333333',
+      color: '#ffffff',
+      fontFamily: 'system-ui, sans-serif',
+      fontSize: 'clamp(3rem, 12vw, 8rem)',
+      fontWeight: '800',
+      textAlign: 'center',
+      letterSpacing: '-0.04em',
+      pointerEvents: 'none',
+    });
+    document.body.appendChild(processingOverlay);
+  }
+  processingOverlay.style.display = active ? 'flex' : 'none';
+}
 
 // Phase 3: real tracking. The tracker turns pose frames into flags and round events.
 const tracker = createRoundTracker({ heightIn: CONFIG.HEIGHT_DEFAULT_IN });
@@ -59,6 +87,11 @@ const throwTools = {
 
 const detector = createThrowDetector({
   onThrow(t) {
+    // A second release before the first verdict is unexpected: never queue overlapping throws.
+    if (throwAwaitingVerdict) {
+      console.warn('Unexpected throw detected while another throw is awaiting a verdict; ignoring the new throw.', t);
+      return;
+    }
     // Give the independent disc worker an uncontended 1.5 s window to follow the flight.
     // The last player box remains frozen in the worker while pose inference is paused.
     pose.pauseFor(1500, () => detector.clearMotion());
@@ -74,6 +107,8 @@ const detector = createThrowDetector({
       });
       return;
     }
+    throwAwaitingVerdict = true;
+    setProcessing(true);
     outcome.release({
       t: t.t,
       release: t.release || null,
@@ -111,6 +146,8 @@ function requestRoundEnd() {
 }
 
 function onVerdict(v) {
+  throwAwaitingVerdict = false;
+  setProcessing(false);
   if (DEBUG) console.info('verdict', v.result, v.missDirection, v.reason, v.conf.toFixed(2), v.ev);
   dispatch({
     type: 'throw',
@@ -156,6 +193,7 @@ function dispatch(ev) {
   state = next;
 
   const inSetup = state.screen === SCREEN.SETUP;
+  if (inSetup) { throwAwaitingVerdict = false; setProcessing(false); }
   setupRoot.hidden = !inSetup;
   debugRoot.classList.toggle('on-setup', inSetup);
   screenRoot.hidden = inSetup;
@@ -361,6 +399,8 @@ async function startSession({ heightIn } = {}) {
 }
 
 async function stopSession() {
+  throwAwaitingVerdict = false;
+  setProcessing(false);
   pose.stop();
   tracker.reset();
   detector.reset();
