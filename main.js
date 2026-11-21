@@ -59,6 +59,9 @@ const throwTools = {
 
 const detector = createThrowDetector({
   onThrow(t) {
+    // Give the independent disc worker an uncontended 1.5 s window to follow the flight.
+    // The last player box remains frozen in the worker while pose inference is paused.
+    pose.pauseFor(1500, () => detector.clearMotion());
     if (OUTCOMES[outcomeIdx] !== 'auto') { // debug override: score right away
       dispatch({
         type: 'throw',
@@ -409,5 +412,18 @@ if (DEBUG) {
   const { createOutcomeDebug } = await import('./outcome-debug.js');
   createOutcomeDebug(debugRoot, {
     video: display.video, finder, chains, getStreams: cam.getStreams, outcome,
+    getDiagnostics: () => ({
+      pose: pose.getStats(),
+      camera: cam.getCameraInfo(),
+      swing: detector.getTrace(),
+      throws: detector.getInfo(),
+      state: {
+        screen: state.screen,
+        roundNumber: state.roundNumber,
+        round: state.round,
+        throws: state.throws,
+        rounds: state.rounds,
+      },
+    }),
   });
 }

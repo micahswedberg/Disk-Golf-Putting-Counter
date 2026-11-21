@@ -13,7 +13,7 @@ const f = (v, d = 1) => (v == null || !Number.isFinite(v) ? '--' : v.toFixed(d))
  * Appends a collapsible section to `root`. Returns { update() } (cheap; call a few times a second).
  */
 export function createOutcomeDebug(root, {
-  video, finder, chains, getStreams, outcome,
+  video, finder, chains, getStreams, outcome, getDiagnostics = () => ({}),
 }) {
   const B = CONFIG.BASKET;
   const C = CONFIG.CHAIN;
@@ -51,22 +51,111 @@ export function createOutcomeDebug(root, {
   };
   button('Re-find basket', () => finder.reset());
   const recBtn = button('Record clip', () => (rec ? stopRecording() : startRecording()));
-  const replayBtn = button('Save replay', () => {
-    const rp = outcome.getReplays();
-    if (!rp.length) { replayBtn.textContent = 'No throws yet'; setTimeout(() => { replayBtn.textContent = 'Save replay'; }, 1500); return; }
-    const blob = new Blob([JSON.stringify({ saved: new Date().toISOString(), config: CONFIG.OUTCOME, replays: rp })], { type: 'application/json' });
+  // Build one ZIP so mobile browsers only need to approve one download. The archive uses
+  // uncompressed ZIP entries; this keeps the exporter dependency-free and fast for frame logs.
+  function makeZip(files) {
+    const encoder = new TextEncoder();
+    const crcTable = makeZip.crcTable || (makeZip.crcTable = (() => {
+      const table = new Uint32Array(256);
+      for (let n = 0; n < 256; n += 1) {
+        let c = n;
+        for (let k = 0; k < 8; k += 1) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        table[n] = c >>> 0;
+      }
+      return table;
+    })());
+    const crc32 = (bytes) => {
+      let c = 0xffffffff;
+      for (const b of bytes) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const u16 = (v) => [v & 255, (v >>> 8) & 255];
+    const u32 = (v) => [...u16(v & 0xffff), ...u16(Math.floor(v / 65536))];
+    const local = []; const central = []; let offset = 0;
+    for (const file of files) {
+      const name = encoder.encode(file.name);
+      const data = typeof file.data === 'string' ? encoder.encode(file.data) : file.data;
+      const crc = crc32(data);
+      const header = new Uint8Array([
+        ...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0),
+        ...u16(0), ...u16(0), ...u32(crc), ...u32(data.length), ...u32(data.length),
+        ...u16(name.length), ...u16(0), ...name,
+      ]);
+      local.push(header, data);
+      const dir = new Uint8Array([
+        ...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0),
+        ...u16(0), ...u16(0), ...u32(crc), ...u32(data.length), ...u32(data.length),
+        ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset), ...name,
+      ]);
+      central.push(dir);
+      offset += header.length + data.length;
+    }
+    const centralSize = central.reduce((n, b) => n + b.length, 0);
+    const end = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(centralSize), ...u32(offset), ...u16(0)]);
+    return new Blob([...local, ...central, end], { type: 'application/zip' });
+  }
+
+  function downloadReport() {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const diagnostics = getDiagnostics() || {};
+    const oi = outcome.getInfo();
+    const replays = outcome.getReplays();
+    const verdicts = oi.judge.log || [];
+    const chainsNow = chains.getInfo();
+    const swing = diagnostics.swing || { samples: [], events: [] };
+    const frames = replays.flatMap((r) => (r.frames || []).map((frame) => ({ throwId: r.id, ...frame })));
+    const report = {
+      saved: new Date().toISOString(),
+      app: 'Disc Golf Putting Counter',
+      config: CONFIG,
+      diagnostics,
+      outcome: { watcher: oi.watcher, gate: oi.gate, pending: oi.judge.pending, verdicts },
+      audio: chainsNow,
+      replayCount: replays.length,
+      replays,
+      frameDataNote: 'Every analyzed disc-worker/main-thread frame retained by the replay buffer for each saved throw (release -2s through evaluation horizon). Each frame includes timestamp, blobs, foreground ratio, dropped-frame count, warmup state, and player mask.',
+    };
+    const swingText = (swing.events || []).map((e) => JSON.stringify(e)).join('\n') || 'no swing events';
+    const verdictText = verdicts.map((v) => JSON.stringify(v)).join('\n') || 'no verdicts';
+    const frameHeader = 'throwId,t,fgOut,dropped,warm,player,blobCount,blobsJson';
+    const frameCsv = [frameHeader, ...frames.map((f) => [
+      f.throwId, f.t, f.fgOut, f.dropped, f.warm,
+      JSON.stringify(f.player || null), (f.blobs || []).length,
+      JSON.stringify(f.blobs || []),
+    ].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+    const summary = [
+      `Saved: ${report.saved}`,
+      `Completed replay throws: ${replays.length}`,
+      `Verdicts: ${verdicts.length}`,
+      `Captured analyzed frames: ${frames.length}`,
+      `Swing events: ${(swing.events || []).length}`,
+      `Pose stats: ${JSON.stringify(diagnostics.pose || {})}`,
+      `Camera stats: ${JSON.stringify(diagnostics.camera || {})}`,
+      `Disc watcher: ${JSON.stringify(oi.watcher || {})}`,
+      '',
+      'Frame coverage: each replay includes the retained analyzed frames from 2 seconds before release through the evaluation horizon (currently 4.5 seconds after release).',
+      'The JSON contains full per-throw replay objects, frame/blob data, release snapshots, verdict evidence, config, and current diagnostics.',
+    ].join('\n');
+    const zip = makeZip([
+      { name: 'report.json', data: JSON.stringify(report, null, 2) },
+      { name: 'session-summary.txt', data: summary },
+      { name: 'swing-log.jsonl', data: swingText },
+      { name: 'verdict-log.jsonl', data: verdictText },
+      { name: 'frame-data.csv', data: frameCsv },
+      { name: 'chain-audio-log.json', data: JSON.stringify(chainsNow, null, 2) },
+    ]);
+    const url = URL.createObjectURL(zip);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `putt-replay-${Date.now()}.json`;
+    a.href = url;
+    a.download = `putt-report-${stamp}.zip`;
+    document.body.appendChild(a);
     a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-  });
-  const logBtn = button('Copy verdict log', async () => {
-    const log = outcome.getInfo().judge.log;
-    const text = log.map((l) => JSON.stringify(l)).join('\n') || 'no verdicts yet';
-    try { await navigator.clipboard.writeText(text); logBtn.textContent = 'Copied!'; } catch (_) { logBtn.textContent = 'Copy failed'; }
-    setTimeout(() => { logBtn.textContent = 'Copy verdict log'; }, 1500);
-  });
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    reportBtn.textContent = 'Report downloaded';
+    setTimeout(() => { reportBtn.textContent = 'Download report'; }, 1800);
+  }
+  const reportBtn = button('Download report', downloadReport);
 
   // ---- Clip recorder ------------------------------------------------------------------------
   let rec = null;

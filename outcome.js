@@ -638,6 +638,7 @@ export function createChainDetector({ onChain, onStatus } = {}) {
 // ===========================================================================================
 
 let stackBuf = null;
+let fgBuf = null;
 
 /**
  * Pure. One analysis frame -> foreground blobs, and the background model is updated in place.
@@ -648,7 +649,9 @@ let stackBuf = null;
  */
 export function detectBlobs(luma, prev, bg, w, h, cfg = CONFIG.OUTCOME, playerPx = null, alpha = cfg.BG_ALPHA) {
   const n = w * h;
-  const fg = new Uint8Array(n);
+  if (!fgBuf || fgBuf.length !== n) fgBuf = new Uint8Array(n);
+  const fg = fgBuf;
+  fg.fill(0);
   const T = cfg.FG_THRESH;
   const MT = cfg.MOVE_THRESH;
   const a = alpha;
@@ -1251,6 +1254,16 @@ export function analyzeThrow(ctx, cfg = CONFIG.OUTCOME) {
   };
   const dirOf = (u, v) => (u < -0.5 ? 'short' : u > 0.5 ? 'long' : v > cfg.REST_OUT_V ? 'short' : null);
 
+  // A disc observed below the basket's lower edge while horizontally crossing the cage
+  // has passed underneath it. Require two tracked observations to reject one-frame noise.
+  if (trk) {
+    const below = trk.pts.filter((p) => Math.abs(p.u) <= 1.2 && p.v > 0.65);
+    if (below.length >= 2) {
+      ev.belowBasket = below.map((p) => ({ u: p.u, v: p.v, t: p.t }));
+      return missResult('short', 'passed below basket', Math.max(fTrack, 0.8));
+    }
+  }
+
   // 1. The disc flew on past the cage.
   if (passPts >= 2) {
     const fPass = clamp01(passPts / 3);
@@ -1472,7 +1485,7 @@ export function createOutcomeJudge({ onVerdict } = {}) {
       chains: chains.filter((e) => e.t >= t - 1000 && e.t <= t + C.HORIZON_MS + 1000),
       chainsAll: chains.map((e) => ({ ...e })), // every chain event heard recently, to tell "no sound" from "sound not matched"
       frames: frames.filter((f) => f.t >= t - 2000 && f.t <= t + C.HORIZON_MS).map((f) => ({
-        t: r4(f.t), fgOut: r4(f.fgOut), warm: f.warm, dropped: f.dropped, player: f.player,
+        t: r4(f.t), ms: r4(f.ms), fgOut: r4(f.fgOut), warm: f.warm, dropped: f.dropped, player: f.player,
         blobs: f.blobs.map((b) => ({ x: r4(b.x), y: r4(b.y), w: r4(b.w), h: r4(b.h), area: b.area, move: r4(b.move) })),
       })),
     };
